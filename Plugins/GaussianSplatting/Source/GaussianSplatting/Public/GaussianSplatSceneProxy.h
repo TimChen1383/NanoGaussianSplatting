@@ -19,6 +19,9 @@ extern TAutoConsoleVariable<int32> CVarShowClusterStats;
 
 /**
  * GPU resources for Gaussian Splatting rendering
+ * FBufferRHIRef: Raw GPU Memory
+ * ShaderResourceViewRHIRef(SRV): interpret the memory into corresponding type, shader read only
+ * UnorderedAccessViewRHIRef(UAV): interpret the memory into corresponding type, shader read/write
  */
 class FGaussianSplatGPUResources : public FRenderResource
 {
@@ -41,7 +44,7 @@ public:
 	//~ End FRenderResource Interface
 
 public:
-	/** Position data buffer (compressed) */
+	/** Position data buffer */
 	FBufferRHIRef PositionBuffer;
 	FShaderResourceViewRHIRef PositionBufferSRV;
 
