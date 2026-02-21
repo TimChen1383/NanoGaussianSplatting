@@ -19,6 +19,7 @@ public:
 	virtual ~FGaussianSplatViewExtension();
 
 	//~ Begin ISceneViewExtension Interface
+	//Different render pipeline timing for hooking
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;

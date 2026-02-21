@@ -11,7 +11,7 @@ ByteAddressBuffer SHBuffer;
 StructuredBuffer<FGaussianChunkInfo> ChunkBuffer;
 Texture2D ColorTexture;
 SamplerState ColorSampler;
-RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculaed result to ViewDataBuffer
 
 // Cluster visibility integration
 StructuredBuffer<uint> SplatClusterIndexBuffer;

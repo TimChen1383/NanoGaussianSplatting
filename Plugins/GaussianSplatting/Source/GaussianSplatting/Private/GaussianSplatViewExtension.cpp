@@ -85,3 +85,4 @@ void FGaussianSplatViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& G
 {
 	// Rendering is done in OnPostOpaqueRender delegate instead
 }
+

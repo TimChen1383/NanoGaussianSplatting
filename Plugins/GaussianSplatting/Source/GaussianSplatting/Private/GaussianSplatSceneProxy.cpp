@@ -1107,7 +1107,7 @@ void FGaussianSplatSceneProxy::DrawClusterDebug(FPrimitiveDrawInterface* PDI, co
 
 		// Select color based on LOD level
 		int32 ColorIndex = FMath::Min((int32)ClusterInfo.LODLevel, NumLODColors - 1);
-		FLinearColor Color = LODColors[ColorIndex];
+		FLinearColor Color = LODColors[ColorIndex];  
 
 		// Draw wireframe sphere using circle approximation
 		const int32 NumSegments = 16;
