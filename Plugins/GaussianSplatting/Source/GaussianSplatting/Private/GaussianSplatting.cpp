@@ -74,6 +74,17 @@ TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 	TEXT("Use with gs.ShowClusterBounds 2 to visualize which LOD level is being rendered."),
 	ECVF_RenderThreadSafe);
 
+/** Enable splat compaction for GPU-driven work reduction */
+TAutoConsoleVariable<int32> CVarUseCompaction(
+	TEXT("gs.UseCompaction"),
+	1,
+	TEXT("Enable splat compaction for GPU-driven work reduction.\n")
+	TEXT("When enabled, only visible splats are processed in CalcViewData, CalcDistances, and Sort.\n")
+	TEXT("This provides significant performance improvement especially when camera is far from assets.\n")
+	TEXT(" 0: Off - process all splats (original behavior)\n")
+	TEXT(" 1: On - compact visible splats first, then process only those (default)"),
+	ECVF_RenderThreadSafe);
+
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 int32 GGaussianSplatShowClusterStats = 0;

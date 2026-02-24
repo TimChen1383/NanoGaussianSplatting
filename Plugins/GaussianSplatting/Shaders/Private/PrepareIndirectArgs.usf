@@ -1,0 +1,43 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Prepare indirect dispatch and draw arguments from visible splat count.
+// This enables GPU-driven work reduction where subsequent passes only process visible splats.
+
+#include "/Engine/Public/Platform.ush"
+
+// Input: Visible splat count from CompactSplats
+StructuredBuffer<uint> VisibleSplatCount;
+
+// Output: Indirect dispatch arguments (for CalcViewData, CalcDistances compute shaders)
+// Format: uint3 (numGroupsX, numGroupsY, numGroupsZ)
+RWStructuredBuffer<uint> IndirectDispatchArgs;
+
+// Output: Indirect draw arguments (for DrawSplats)
+// Format: IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation
+RWStructuredBuffer<uint> IndirectDrawArgs;
+
+// Thread group size used by CalcViewData/CalcDistances
+uint ComputeThreadGroupSize;
+
+[numthreads(1, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint visibleCount = VisibleSplatCount[0];
+
+	// Prepare indirect dispatch args
+	// numGroups = ceil(visibleCount / ThreadGroupSize)
+	uint numGroups = (visibleCount + ComputeThreadGroupSize - 1) / ComputeThreadGroupSize;
+	numGroups = max(numGroups, 1); // At least 1 group to avoid empty dispatch issues
+
+	IndirectDispatchArgs[0] = numGroups;  // numGroupsX
+	IndirectDispatchArgs[1] = 1;          // numGroupsY
+	IndirectDispatchArgs[2] = 1;          // numGroupsZ
+
+	// Prepare indirect draw args
+	// We draw 2 triangles (6 indices) per quad, 1 quad per visible splat
+	IndirectDrawArgs[0] = 6;              // IndexCountPerInstance (6 indices = 2 triangles)
+	IndirectDrawArgs[1] = visibleCount;   // InstanceCount (one instance per visible splat)
+	IndirectDrawArgs[2] = 0;              // StartIndexLocation
+	IndirectDrawArgs[3] = 0;              // BaseVertexLocation
+	IndirectDrawArgs[4] = 0;              // StartInstanceLocation
+}

@@ -213,6 +213,16 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	LODSplatOutputCountBufferUAV.SafeRelease();
 	LODSplatOutputCountBufferSRV.SafeRelease();
 
+	// Release splat compaction buffers
+	CompactedSplatIndicesBuffer.SafeRelease();
+	CompactedSplatIndicesBufferUAV.SafeRelease();
+	CompactedSplatIndicesBufferSRV.SafeRelease();
+	VisibleSplatCountBuffer.SafeRelease();
+	VisibleSplatCountBufferUAV.SafeRelease();
+	VisibleSplatCountBufferSRV.SafeRelease();
+	IndirectDispatchArgsBuffer.SafeRelease();
+	IndirectDispatchArgsBufferUAV.SafeRelease();
+
 	bInitialized = false;
 }
 
@@ -800,6 +810,77 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created LOD cluster tracking buffers"));
+
+	// Create splat compaction buffers (GPU-driven work reduction)
+	// CompactedSplatIndicesBuffer - stores visible splat indices
+	{
+		const uint32 BufferSize = TotalSplatCount * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianCompactedSplatIndicesBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		CompactedSplatIndicesBuffer = RHICmdList.CreateBuffer(Desc);
+
+		CompactedSplatIndicesBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			CompactedSplatIndicesBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		CompactedSplatIndicesBufferSRV = RHICmdList.CreateShaderResourceView(
+			CompactedSplatIndicesBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// VisibleSplatCountBuffer - atomic counter for visible splat count
+	{
+		const uint32 BufferSize = sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianVisibleSplatCountBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		VisibleSplatCountBuffer = RHICmdList.CreateBuffer(Desc);
+
+		VisibleSplatCountBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			VisibleSplatCountBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		VisibleSplatCountBufferSRV = RHICmdList.CreateShaderResourceView(
+			VisibleSplatCountBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// IndirectDispatchArgsBuffer - for indirect compute dispatch
+	// Format: uint3 (numGroupsX, numGroupsY, numGroupsZ)
+	{
+		const uint32 BufferSize = 3 * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianIndirectDispatchArgsBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_DrawIndirect | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::IndirectArgs);
+		IndirectDispatchArgsBuffer = RHICmdList.CreateBuffer(Desc);
+
+		// Initialize with default values (1, 1, 1)
+		uint32 InitData[3] = { 1, 1, 1 };
+		void* Data = RHICmdList.LockBuffer(IndirectDispatchArgsBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, InitData, BufferSize);
+		RHICmdList.UnlockBuffer(IndirectDispatchArgsBuffer);
+
+		IndirectDispatchArgsBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			IndirectDispatchArgsBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	bSupportsCompaction = true;
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created splat compaction buffers for %d total splats"), TotalSplatCount);
+
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created cluster buffers for %d clusters"), ClusterCount);
 }
 

@@ -246,6 +246,37 @@ public:
 	/** Total splat count for buffer allocation (SplatCount + TotalLODSplats) */
 	int32 TotalSplatCount = 0;
 
+	//----------------------------------------------------------------------
+	// Splat compaction resources (GPU-driven work reduction)
+	//----------------------------------------------------------------------
+
+	/** Compacted list of visible splat indices
+	 * Written by CompactSplats, read by CalcViewData (when using compaction)
+	 * Size: TotalSplatCount * sizeof(uint32) (worst case all visible)
+	 */
+	FBufferRHIRef CompactedSplatIndicesBuffer;
+	FUnorderedAccessViewRHIRef CompactedSplatIndicesBufferUAV;
+	FShaderResourceViewRHIRef CompactedSplatIndicesBufferSRV;
+
+	/** Atomic counter for visible splat count
+	 * Written by CompactSplats, read by PrepareIndirectArgs
+	 * Size: 4 bytes (single uint32)
+	 */
+	FBufferRHIRef VisibleSplatCountBuffer;
+	FUnorderedAccessViewRHIRef VisibleSplatCountBufferUAV;
+	FShaderResourceViewRHIRef VisibleSplatCountBufferSRV;
+
+	/** Indirect dispatch arguments for compute shaders (CalcViewData, CalcDistances)
+	 * Written by PrepareIndirectArgs, read by DispatchComputeIndirect
+	 * Format: uint3 (numGroupsX, numGroupsY, numGroupsZ)
+	 * Size: 12 bytes (3 uint32)
+	 */
+	FBufferRHIRef IndirectDispatchArgsBuffer;
+	FUnorderedAccessViewRHIRef IndirectDispatchArgsBufferUAV;
+
+	/** Whether splat compaction is enabled and buffers are available */
+	bool bSupportsCompaction = false;
+
 	/** Get position format as uint for shader */
 	uint32 GetPositionFormatUint() const { return static_cast<uint32>(PositionFormat); }
 

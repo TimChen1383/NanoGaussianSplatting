@@ -10,24 +10,66 @@
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 ***點的數量很少或很多的情況怎麼辦?
 **************************************************************************************************
-gs.DebugForceLODLevel 0
 
-Don't modify the code.
-Let's discuss first.
 
-It looks a bit better now but still wrong.
-Some points' position are still not correct.
-The color seems to have color space issue as well.
-Seems like lots of LOD splat has data mismatch.
 
-As I know we have done some data compression design in our plugin.
-However I guess those data compression or data pruning design caused the data easily to be mismatched.
-I don't want to spend time debugging each data one by one and see they are matched or not.
-If the original splats(leaf cluster) render correctly, can we just use this data as the source of truth?
-I think having one source of truth data structure will easily by pass the data mismatch issue.
-Can you help me investigate where we do the data compression inside the plugin?
-Especially for high level LOD cluster.
-Is it possible to have no data compression or data pruning and make the data easier to match with each other?
+Nice the performance is so much better!
+
+Next, I want to modify the debug color.
+The console command "gs.ShowClusterBounds 1" will enable the colorful Nanite-style cluster preview.
+However currently the color is quite bright and washed out compare to actual Nanite's color.
+Is it because of the color space?
+I want to make the debug color more like Nanite and not washed out.
+
+
+
+
+
+
+*cluster的顏色我希望深一點 > 是因為color space?
+
+
+
+
+
+*有一直閃的點是怎麼回是usf?
+*splat的前後錯了
+*邊緣有點糊糊的，看能不能改善
+
+
+[發揮cluster效益]
+	- 確實是來自data mismatch
+	- 只有在距離很遙遠的時候才會發揮效益，為什麼?
+	- 近距離用LOD0跟LOD5差別並不大
+	- 遠距離的時候有助於解決quad overdraw
+
+
+Nice! So the issue was came from data mismatched.
+It works fine now!
+
+Let's move on to another issue.
+I want to discuss first. Don't modify the code.
+I placed a lot of gaussian splat assets in the level.
+
+When the assets were close to the camera, if I forced the LOD to 0, the quality looks good and I got 32 fps.
+When the assets were close to the camera, if I forced the LOD to 5, the quality looks bad and I got 36 fps.
+That is out of my expectation.
+The reason that LOD 5 looks bad is because it's rendering less points right? So it's blury.
+However the fps just increase a little bit.
+
+When the assets were far from the camera(which mean the points start overlaaping a lot on each other on the screen), if I forced the LOD to 0, I got 12 fps.
+When the assets were far from the camera, if I forced the LOD to 5, I got 36 fps.
+The performance increse a lot as what I expected and this is the reason I want to build this cluster feature.
+
+Do you have any idea why the cluster system is not helpful when camera is close to the asset?
+Any idea how to make the cluster system helpful?
+
+	
+
+
+
+
+
 
 
 

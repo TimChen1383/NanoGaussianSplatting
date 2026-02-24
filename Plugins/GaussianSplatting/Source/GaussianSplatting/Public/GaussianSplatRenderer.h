@@ -97,6 +97,57 @@ public:
 	// NOTE: DispatchCalcLODViewDataGPUDriven and DispatchUpdateDrawArgs have been removed
 	// in the unified approach. LOD splats are now processed by DispatchCalcViewData.
 
+	//----------------------------------------------------------------------
+	// Splat Compaction (GPU-driven work reduction)
+	//----------------------------------------------------------------------
+
+	/**
+	 * Dispatch the splat compaction compute shader
+	 * Builds a compact list of visible splat indices using atomics
+	 */
+	static void DispatchCompactSplats(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources,
+		int32 TotalSplatCount,
+		int32 OriginalSplatCount,
+		bool bUseLODRendering
+	);
+
+	/**
+	 * Dispatch the prepare indirect args compute shader
+	 * Prepares indirect dispatch and draw arguments from visible splat count
+	 */
+	static void DispatchPrepareIndirectArgs(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources
+	);
+
+	/**
+	 * Dispatch CalcViewData with compaction (indirect dispatch)
+	 * Only processes visible splats from compacted list
+	 */
+	static void DispatchCalcViewDataCompacted(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		int32 SplatCount,
+		int32 OriginalSplatCount,
+		int32 SHOrder,
+		float OpacityScale,
+		float SplatScale,
+		bool bHasColorTexture
+	);
+
+	/**
+	 * Dispatch CalcDistances with indirect dispatch
+	 * Only processes visible splats
+	 */
+	static void DispatchCalcDistancesIndirect(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources
+	);
+
 private:
 	/** Calculate next power of 2 */
 	static uint32 NextPowerOfTwo(uint32 Value);
