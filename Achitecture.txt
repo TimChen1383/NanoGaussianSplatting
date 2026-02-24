@@ -26,14 +26,11 @@ I want to make the debug color more like Nanite and not washed out.
 
 
 
-*cluster的顏色我希望深一點 > 是因為color space?
-
-
-
-
 *重新生成solution file
-*有一直閃的點是怎麼回是usf?
+*submit一次
+
 *splat的前後錯了
+*有一直閃的點是怎麼回是usf? 重開電腦看會不會好
 *邊緣有點糊糊的，看能不能改善
 
 
