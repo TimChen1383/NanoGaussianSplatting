@@ -246,50 +246,88 @@ void FGaussianClusterBuilder::BuildParentLevel(
 
 	OutParentClusters.Reset(NumParents);
 
-	for (int32 ParentIdx = 0; ParentIdx < NumParents; ParentIdx++)
+	// Greedy nearest-neighbor clustering based on spatial proximity
+	TArray<bool> Claimed;
+	Claimed.SetNumZeroed(NumChildren);
+
+	while (true)
 	{
+		// Find first unclaimed child as seed
+		int32 SeedIdx = INDEX_NONE;
+		for (int32 i = 0; i < NumChildren; i++)
+		{
+			if (!Claimed[i])
+			{
+				SeedIdx = i;
+				break;
+			}
+		}
+		if (SeedIdx == INDEX_NONE)
+		{
+			break; // All children claimed
+		}
+
+		// Gather unclaimed indices and their distances to the seed
+		struct FDistEntry
+		{
+			int32 ChildIdx;
+			float DistSq;
+		};
+		TArray<FDistEntry> Distances;
+		const FVector3f SeedCenter = ChildClusters[SeedIdx].BoundingSphereCenter;
+
+		for (int32 i = 0; i < NumChildren; i++)
+		{
+			if (!Claimed[i] && i != SeedIdx)
+			{
+				float DistSq = FVector3f::DistSquared(SeedCenter, ChildClusters[i].BoundingSphereCenter);
+				Distances.Add({i, DistSq});
+			}
+		}
+
+		// Sort by distance ascending
+		Distances.Sort([](const FDistEntry& A, const FDistEntry& B) { return A.DistSq < B.DistSq; });
+
+		// Build parent from seed + nearest neighbors
 		FGaussianCluster Parent;
 		Parent.ClusterID = NextClusterID++;
-		Parent.ParentClusterID = GaussianClusterConstants::RootParentID; // Will be set if another level is created
+		Parent.ParentClusterID = GaussianClusterConstants::RootParentID;
 		Parent.LODLevel = ParentLODLevel;
 		Parent.ResetBounds();
 
-		// Assign children to this parent
-		const int32 ChildStartIdx = ParentIdx * MaxChildrenPerCluster;
-		const int32 ChildEndIdx = FMath::Min(ChildStartIdx + MaxChildrenPerCluster, NumChildren);
-
-		uint32 TotalSplatCount = 0;
-		uint32 MinSplatStartIndex = MAX_uint32;
-
-		for (int32 ChildIdx = ChildStartIdx; ChildIdx < ChildEndIdx; ChildIdx++)
+		// Claim seed
+		Claimed[SeedIdx] = true;
 		{
-			FGaussianCluster& Child = ChildClusters[ChildIdx];
-
-			// Set child's parent
+			FGaussianCluster& Child = ChildClusters[SeedIdx];
 			Child.ParentClusterID = Parent.ClusterID;
-
-			// Add child ID to parent
 			Parent.ChildClusterIDs.Add(Child.ClusterID);
+			Parent.ExpandBounds(Child);
+		}
 
-			// Expand parent bounds to include child
+		uint32 TotalSplatCount = ChildClusters[SeedIdx].SplatCount;
+
+		// Claim nearest neighbors up to MaxChildrenPerCluster - 1
+		int32 NeighborsToTake = FMath::Min(Distances.Num(), MaxChildrenPerCluster - 1);
+		for (int32 i = 0; i < NeighborsToTake; i++)
+		{
+			int32 ChildIdx = Distances[i].ChildIdx;
+			Claimed[ChildIdx] = true;
+
+			FGaussianCluster& Child = ChildClusters[ChildIdx];
+			Child.ParentClusterID = Parent.ClusterID;
+			Parent.ChildClusterIDs.Add(Child.ClusterID);
 			Parent.ExpandBounds(Child);
 
-			// Track splat range
 			TotalSplatCount += Child.SplatCount;
-			MinSplatStartIndex = FMath::Min(MinSplatStartIndex, Child.SplatStartIndex);
 		}
 
 		Parent.SplatCount = TotalSplatCount;
-		Parent.SplatStartIndex = MinSplatStartIndex;
+		Parent.SplatStartIndex = 0; // Not meaningful for non-leaf clusters with spatial grouping
 
-		// Compute bounding sphere from AABB
 		Parent.ComputeBoundingSphereFromAABB();
 
 		OutParentClusters.Add(MoveTemp(Parent));
 	}
-
-	// Update child clusters with their new parent IDs (they're passed by reference)
-	// Already done in the loop above
 }
 
 void FGaussianClusterBuilder::CalculateClusterBounds(
@@ -414,31 +452,20 @@ FGaussianSplatData FGaussianClusterBuilder::MergeGaussians(
 	Result.Position = WeightedPosition;
 	Result.SH_DC = WeightedSHDC;
 
-	// Combined scale: use average scale expanded to cover the merged region
-	// This is an approximation - proper covariance merging would be more complex
+	// Combined scale: weighted average of original scales
+	// Don't add position spread — it dominates over individual scales in dense scenes
+	// and produces massively oversized LOD splats. The combined opacity handles
+	// the increased visual impact of merging N splats into 1.
 	FVector3f AvgScale = FVector3f::ZeroVector;
-	FVector3f MinPos = FVector3f(MAX_FLT);
-	FVector3f MaxPos = FVector3f(-MAX_FLT);
 
 	for (int32 i = 0; i < Count; i++)
 	{
 		const FGaussianSplatData& Splat = Splats[StartIndex + i];
 		float Weight = Splat.Opacity / TotalWeight;
 		AvgScale += Splat.Scale * Weight;
-
-		MinPos = FVector3f(
-			FMath::Min(MinPos.X, Splat.Position.X),
-			FMath::Min(MinPos.Y, Splat.Position.Y),
-			FMath::Min(MinPos.Z, Splat.Position.Z));
-		MaxPos = FVector3f(
-			FMath::Max(MaxPos.X, Splat.Position.X),
-			FMath::Max(MaxPos.Y, Splat.Position.Y),
-			FMath::Max(MaxPos.Z, Splat.Position.Z));
 	}
 
-	// Scale should be larger to cover the spread of merged splats
-	FVector3f Spread = (MaxPos - MinPos) * 0.5f;
-	Result.Scale = AvgScale + Spread * 0.5f; // Blend between average and spread
+	Result.Scale = AvgScale;
 
 	// Use identity rotation for merged splat (could compute average quaternion)
 	Result.Rotation = FQuat4f::Identity;
@@ -491,8 +518,6 @@ FGaussianSplatData FGaussianClusterBuilder::MergeLODSplats(
 	FVector3f WeightedPosition = FVector3f::ZeroVector;
 	FVector3f WeightedSHDC = FVector3f::ZeroVector;
 	FVector3f AvgScale = FVector3f::ZeroVector;
-	FVector3f MinPos = FVector3f(MAX_FLT);
-	FVector3f MaxPos = FVector3f(-MAX_FLT);
 
 	for (int32 i = 0; i < Count; i++)
 	{
@@ -502,22 +527,12 @@ FGaussianSplatData FGaussianClusterBuilder::MergeLODSplats(
 		WeightedPosition += Splat.Position * Weight;
 		WeightedSHDC += Splat.SH_DC * Weight;
 		AvgScale += Splat.Scale * Weight;
-
-		MinPos = FVector3f(
-			FMath::Min(MinPos.X, Splat.Position.X),
-			FMath::Min(MinPos.Y, Splat.Position.Y),
-			FMath::Min(MinPos.Z, Splat.Position.Z));
-		MaxPos = FVector3f(
-			FMath::Max(MaxPos.X, Splat.Position.X),
-			FMath::Max(MaxPos.Y, Splat.Position.Y),
-			FMath::Max(MaxPos.Z, Splat.Position.Z));
 	}
 
 	Result.Position = WeightedPosition;
 	Result.SH_DC = WeightedSHDC;
 
-	FVector3f Spread = (MaxPos - MinPos) * 0.5f;
-	Result.Scale = AvgScale + Spread * 0.5f;
+	Result.Scale = AvgScale;
 	Result.Rotation = FQuat4f::Identity;
 
 	// Combined opacity
@@ -571,32 +586,56 @@ void FGaussianClusterBuilder::GenerateLODSplats(
 
 			if (LODLevel == 1)
 			{
-				// First LOD level - merge from original splats
-				int32 NumLODSplats = FMath::DivideAndRoundUp(static_cast<int32>(Cluster.SplatCount), ReductionRatio);
-				NumLODSplats = FMath::Max(1, NumLODSplats); // At least 1 LOD splat
+				// First LOD level - collect original splats from all child leaf clusters
+				// (children may not be contiguous due to spatial nearest-neighbor grouping)
+				TArray<FGaussianSplatData> ChildSplats;
 
-				for (int32 i = 0; i < NumLODSplats; i++)
+				for (uint32 ChildID : Cluster.ChildClusterIDs)
 				{
-					int32 SrcStart = static_cast<int32>(Cluster.SplatStartIndex) + i * ReductionRatio;
-					int32 SrcCount = FMath::Min(ReductionRatio,
-						static_cast<int32>(Cluster.SplatStartIndex + Cluster.SplatCount) - SrcStart);
-
-					if (SrcCount > 0)
+					for (const FGaussianCluster& Child : Hierarchy.Clusters)
 					{
-						FGaussianSplatData MergedSplat = MergeGaussians(Splats, SrcStart, SrcCount);
-						Hierarchy.LODSplats.Add(MergedSplat);
-						NextLODSplatIndex++;
-
-						// Compute max displacement: how far each source splat is from the merged centroid
-						for (int32 j = 0; j < SrcCount; j++)
+						if (Child.ClusterID == ChildID)
 						{
-							float Displacement = FVector3f::Dist(Splats[SrcStart + j].Position, MergedSplat.Position);
-							ClusterMaxDisplacement = FMath::Max(ClusterMaxDisplacement, Displacement);
+							for (uint32 j = 0; j < Child.SplatCount; j++)
+							{
+								uint32 SplatIdx = Child.SplatStartIndex + j;
+								if (SplatIdx < (uint32)Splats.Num())
+								{
+									ChildSplats.Add(Splats[SplatIdx]);
+								}
+							}
+							break;
 						}
 					}
 				}
 
-				Cluster.LODSplatCount = NextLODSplatIndex - Cluster.LODSplatStartIndex;
+				if (ChildSplats.Num() > 0)
+				{
+					int32 NumLODSplats = FMath::DivideAndRoundUp(ChildSplats.Num(), ReductionRatio);
+					NumLODSplats = FMath::Max(1, NumLODSplats);
+
+					for (int32 i = 0; i < NumLODSplats; i++)
+					{
+						int32 SrcStart = i * ReductionRatio;
+						int32 SrcCount = FMath::Min(ReductionRatio, ChildSplats.Num() - SrcStart);
+
+						if (SrcCount > 0)
+						{
+							FGaussianSplatData MergedSplat = MergeGaussians(ChildSplats, SrcStart, SrcCount);
+							Hierarchy.LODSplats.Add(MergedSplat);
+							NextLODSplatIndex++;
+
+							// Compute max displacement: how far each source splat is from the merged centroid
+							for (int32 j = 0; j < SrcCount; j++)
+							{
+								float Displacement = FVector3f::Dist(ChildSplats[SrcStart + j].Position, MergedSplat.Position);
+								ClusterMaxDisplacement = FMath::Max(ClusterMaxDisplacement, Displacement);
+							}
+						}
+					}
+
+					Cluster.LODSplatCount = NextLODSplatIndex - Cluster.LODSplatStartIndex;
+				}
 
 				// MaxError = actual merge displacement, floored at half the bounding sphere radius
 				// The floor prevents dense clusters (tiny displacement) from selecting LOD too early
