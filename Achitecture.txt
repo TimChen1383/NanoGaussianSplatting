@@ -12,6 +12,10 @@
 [Render]
 	- render preview沒問題但 render result有問題，為什麼?
 
+Nice! The issue got fixed.
+
+Let's move on to another issue.
+
 I tired render the gaussian splat asset with movie render queue.
 However there is an issue.
 If I use Movie Render Queue to render png images, the gaussian splat asset area will be clipped out and it's alpha.

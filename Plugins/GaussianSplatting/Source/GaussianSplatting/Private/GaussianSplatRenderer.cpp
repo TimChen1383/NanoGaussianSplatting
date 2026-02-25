@@ -467,12 +467,14 @@ void FGaussianSplatRenderer::DrawSplats(
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
 
 	// Blend mode: Standard premultiplied alpha "over" for back-to-front compositing
-	// result = src + dst * (1 - srcAlpha)
+	// result.rgb = src.rgb + dst.rgb * (1 - srcAlpha)
 	// This properly attenuates the background behind splats
+	// NOTE: Using CW_RGB (not CW_RGBA) to preserve destination alpha.
+	// This fixes Movie Render Queue PNG export showing transparent splats.
+	// The scene buffer starts with alpha=1, and we don't want splats to reduce it.
 	GraphicsPSOInit.BlendState = TStaticBlendState<
-		CW_RGBA,
-		BO_Add, BF_One, BF_InverseSourceAlpha,  // Color: Src + Dst * (1 - SrcAlpha)
-		BO_Add, BF_One, BF_InverseSourceAlpha   // Alpha: same
+		CW_RGB,
+		BO_Add, BF_One, BF_InverseSourceAlpha   // Color: Src + Dst * (1 - SrcAlpha)
 	>::GetRHI();
 
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
