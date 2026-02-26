@@ -1,19 +1,21 @@
 
 [To Do list]
-***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate)
+***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate) > 但打光不是必要的，畢竟原本的光也是bake在裡面了 > 第一版應該不用做到這個
 ***SH function目前是失敗的
-***點的數量很少或很多的情況怎麼辦?
 *bulkdata有大小限制 > aerial的野柳超出bulk data的大小
 ***整理筆記
 **************************************************************************************************
-
+[LOD切換更不明顯一點]
+	- force各LOD看細節如何
+	- LOD 2,3,4,5好像都有一些洞 > 但遠看其實看不到那些洞
+	- 點的數量很少或很多的情況怎麼辦
+	- 單一大塊場景用nanite好像沒幫助，多個小asset好像比較有幫助
 
 
 [SparkJS]
 ***分析一下sparkjs是怎麼優化的 > 先跑一次sparkjs看一下效能如何 > 比一下效能有沒有比supersplat好
 
-[LOD切換更不明顯一點]
-	- force各LOD看細節如何
+
 
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]
