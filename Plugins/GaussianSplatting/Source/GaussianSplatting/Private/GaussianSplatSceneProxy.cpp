@@ -9,6 +9,9 @@
 #include "RenderGraphBuilder.h"
 #include "SceneView.h"
 #include "SceneManagement.h"
+#include "DynamicMeshBuilder.h"
+#include "Materials/Material.h"
+#include "EngineUtils.h"
 
 //////////////////////////////////////////////////////////////////////////
 // FGaussianSplatGPUResources
@@ -1089,6 +1092,17 @@ FPrimitiveViewRelevance FGaussianSplatSceneProxy::GetViewRelevance(const FSceneV
 	return Result;
 }
 
+#if WITH_EDITOR
+HHitProxy* FGaussianSplatSceneProxy::CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy>>& OutHitProxies)
+{
+	// Let the base class create the default HActor hit proxy for the owning actor.
+	HHitProxy* DefaultProxy = FPrimitiveSceneProxy::CreateHitProxies(Component, OutHitProxies);
+	// Cache it so GetDynamicMeshElements can use it without touching game-thread UObjects.
+	SelectionHitProxy = DefaultProxy;
+	return DefaultProxy;
+}
+#endif
+
 void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 	const TArray<const FSceneView*>& Views,
 	const FSceneViewFamily& ViewFamily,
@@ -1106,6 +1120,70 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 			{
 				RenderBounds(PDI, ViewFamily.EngineShowFlags, GetBounds(), true);
 			}
+
+#if WITH_EDITOR
+			// During the hit proxy pass, render a solid box covering the local bounds.
+			// This makes the splat selectable by clicking anywhere within its bounds in
+			// the editor viewport. The box is invisible in normal rendering.
+			if (ViewFamily.EngineShowFlags.HitProxies)
+			{
+				const FBox LocalBox = GetLocalBounds().GetBox();
+				const FVector3f Min(LocalBox.Min);
+				const FVector3f Max(LocalBox.Max);
+
+				FDynamicMeshBuilder MeshBuilder(Views[ViewIndex]->GetFeatureLevel());
+
+				// Tangent basis (arbitrary – not shaded, just needs to be valid)
+				const FVector2f UV(0.f, 0.f);
+				const FVector3f TX(1.f, 0.f, 0.f);
+				const FVector3f TY(0.f, 1.f, 0.f);
+				const FVector3f TZ(0.f, 0.f, 1.f);
+				const FColor White = FColor::White;
+
+				// 8 corners  (named by which axes are at Max: 0=Min, 1=Max)
+				const int32 V000 = MeshBuilder.AddVertex(FVector3f(Min.X, Min.Y, Min.Z), UV, TX, TY, TZ, White);
+				const int32 V100 = MeshBuilder.AddVertex(FVector3f(Max.X, Min.Y, Min.Z), UV, TX, TY, TZ, White);
+				const int32 V010 = MeshBuilder.AddVertex(FVector3f(Min.X, Max.Y, Min.Z), UV, TX, TY, TZ, White);
+				const int32 V110 = MeshBuilder.AddVertex(FVector3f(Max.X, Max.Y, Min.Z), UV, TX, TY, TZ, White);
+				const int32 V001 = MeshBuilder.AddVertex(FVector3f(Min.X, Min.Y, Max.Z), UV, TX, TY, TZ, White);
+				const int32 V101 = MeshBuilder.AddVertex(FVector3f(Max.X, Min.Y, Max.Z), UV, TX, TY, TZ, White);
+				const int32 V011 = MeshBuilder.AddVertex(FVector3f(Min.X, Max.Y, Max.Z), UV, TX, TY, TZ, White);
+				const int32 V111 = MeshBuilder.AddVertex(FVector3f(Max.X, Max.Y, Max.Z), UV, TX, TY, TZ, White);
+
+				// -Z face
+				MeshBuilder.AddTriangle(V000, V010, V100);
+				MeshBuilder.AddTriangle(V010, V110, V100);
+				// +Z face
+				MeshBuilder.AddTriangle(V001, V101, V011);
+				MeshBuilder.AddTriangle(V101, V111, V011);
+				// -Y face
+				MeshBuilder.AddTriangle(V000, V100, V001);
+				MeshBuilder.AddTriangle(V100, V101, V001);
+				// +Y face
+				MeshBuilder.AddTriangle(V010, V011, V110);
+				MeshBuilder.AddTriangle(V011, V111, V110);
+				// -X face
+				MeshBuilder.AddTriangle(V000, V001, V010);
+				MeshBuilder.AddTriangle(V001, V011, V010);
+				// +X face
+				MeshBuilder.AddTriangle(V100, V110, V101);
+				MeshBuilder.AddTriangle(V110, V111, V101);
+
+				// Use default opaque surface material – only its depth output matters here.
+				// bDisableBackfaceCulling=true so all faces are drawn regardless of winding.
+				UMaterialInterface* HitMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
+				MeshBuilder.GetMesh(
+					GetLocalToWorld(),
+					HitMaterial->GetRenderProxy(),
+					SDPG_World,
+					/*bDisableBackfaceCulling=*/true,
+					/*bReceivesDecals=*/false,
+					/*bUseSelectionOutline=*/false,
+					ViewIndex,
+					Collector,
+					SelectionHitProxy);
+			}
+#endif // WITH_EDITOR
 		}
 	}
 }

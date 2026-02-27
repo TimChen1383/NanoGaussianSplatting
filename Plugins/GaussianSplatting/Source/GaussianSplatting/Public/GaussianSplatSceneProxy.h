@@ -372,6 +372,9 @@ public:
 
 	virtual void CreateRenderThreadResources(FRHICommandListBase& RHICmdList) override;
 	virtual void DestroyRenderThreadResources() override;
+#if WITH_EDITOR
+	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy>>& OutHitProxies) override;
+#endif
 	//~ End FPrimitiveSceneProxy Interface
 
 	/** Get GPU resources */
@@ -402,4 +405,8 @@ private:
 	float SplatScale = 1.0f;
 	bool bEnableFrustumCulling = true;
 
+#if WITH_EDITOR
+	/** Cached hit proxy created in CreateHitProxies, used for editor viewport click selection. */
+	HHitProxy* SelectionHitProxy = nullptr;
+#endif
 };
