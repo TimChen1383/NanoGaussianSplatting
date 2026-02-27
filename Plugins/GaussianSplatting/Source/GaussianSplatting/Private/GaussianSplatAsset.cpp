@@ -135,6 +135,10 @@ void UGaussianSplatAsset::InitializeFromSplatData(const TArray<FGaussianSplatDat
 	CreateColorTextureFromData();       // Create the runtime texture
 	CompressSH(InSplats);
 
+#if WITH_EDITOR
+	GenerateThumbnail(InSplats);
+#endif
+
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Initialized with %d splats, memory: %lld bytes"),
 		SplatCount, GetMemoryUsage());
 }
@@ -693,5 +697,125 @@ void UGaussianSplatAsset::ClearNaniteClusterHierarchy()
 
 	// Notify listeners (components) that asset has changed so they can recreate their scene proxies
 	OnAssetChanged.Broadcast(this);
+}
+
+void UGaussianSplatAsset::GenerateThumbnail(const TArray<FGaussianSplatData>& InSplats)
+{
+	if (InSplats.IsEmpty()) return;
+
+	const int32 ThumbSize = 256;
+
+	// Initialize pixel buffer with a dark background
+	TArray<FColor> Pixels;
+	Pixels.Init(FColor(30, 30, 30, 255), ThumbSize * ThumbSize);
+
+	// Depth buffer: keep the front-most (min depth) splat per pixel
+	TArray<float> DepthBuffer;
+	DepthBuffer.Init(TNumericLimits<float>::Max(), ThumbSize * ThumbSize);
+
+	// ------------------------------------------------------------------
+	// Fixed camera: 45° yaw, -25° pitch, orthographic projection
+	// ------------------------------------------------------------------
+	const float PitchRad = FMath::DegreesToRadians(-25.f);
+	const float YawRad   = FMath::DegreesToRadians(45.f);
+
+	// Camera's forward vector (direction it is looking)
+	const FVector CamForward(
+		FMath::Cos(PitchRad) * FMath::Cos(YawRad),
+		FMath::Cos(PitchRad) * FMath::Sin(YawRad),
+		FMath::Sin(PitchRad)
+	);
+	const FVector CamRight = FVector::CrossProduct(CamForward, FVector::UpVector).GetSafeNormal();
+	const FVector CamUp    = FVector::CrossProduct(CamRight,   CamForward).GetSafeNormal();
+
+	// Scale: find the half-extent of the bounds projected onto the camera plane
+	const FVector Center = BoundingBox.GetCenter();
+	const FVector Extent = BoundingBox.GetExtent();
+
+	float MaxExtent = 0.f;
+	for (int32 sx : {-1, 1}) for (int32 sy : {-1, 1}) for (int32 sz : {-1, 1})
+	{
+		const FVector Corner = Extent * FVector(sx, sy, sz);
+		MaxExtent = FMath::Max(MaxExtent, FMath::Abs(FVector::DotProduct(Corner, CamRight)));
+		MaxExtent = FMath::Max(MaxExtent, FMath::Abs(FVector::DotProduct(Corner, CamUp)));
+	}
+	MaxExtent = FMath::Max(MaxExtent, 1.f) * 1.1f; // 10 % padding
+
+	// ------------------------------------------------------------------
+	// Rasterize: stride so we don't spend more than ~200k iterations
+	// ------------------------------------------------------------------
+	const int32 Step = FMath::Max(1, InSplats.Num() / 200000);
+
+	for (int32 i = 0; i < InSplats.Num(); i += Step)
+	{
+		const FGaussianSplatData& Splat = InSplats[i];
+		const FVector Rel = FVector(Splat.Position) - Center;
+
+		const float U     =  FVector::DotProduct(Rel, CamRight);
+		const float V     =  FVector::DotProduct(Rel, CamUp);
+		const float Depth =  FVector::DotProduct(Rel, CamForward); // smaller = closer
+
+		const float NormU = (U / MaxExtent + 1.f) * 0.5f;
+		const float NormV = (1.f - (V / MaxExtent + 1.f) * 0.5f); // flip Y
+
+		const int32 PX = FMath::Clamp((int32)(NormU * ThumbSize), 0, ThumbSize - 1);
+		const int32 PY = FMath::Clamp((int32)(NormV * ThumbSize), 0, ThumbSize - 1);
+		const int32 PixIdx = PY * ThumbSize + PX;
+
+		if (Depth < DepthBuffer[PixIdx])
+		{
+			DepthBuffer[PixIdx] = Depth;
+
+			// SH DC → sRGB-ish base color (clamped, linear → sRGB gamma)
+			const FVector3f BaseColor = GaussianSplattingUtils::SHDCToColor(Splat.SH_DC);
+			const auto ToSRGB = [](float Lin) -> uint8
+			{
+				float Clamped = FMath::Clamp(Lin, 0.f, 1.f);
+				return (uint8)(FMath::Pow(Clamped, 1.f / 2.2f) * 255.f + 0.5f);
+			};
+
+			Pixels[PixIdx] = FColor(ToSRGB(BaseColor.X), ToSRGB(BaseColor.Y), ToSRGB(BaseColor.Z), 255);
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// Build a persistent UTexture2D stored inside this asset's package
+	// ------------------------------------------------------------------
+	ThumbnailTexture = NewObject<UTexture2D>(this, TEXT("ThumbnailTexture"),
+		RF_Public | RF_Transactional);
+
+	FTexturePlatformData* PlatformData = new FTexturePlatformData();
+	PlatformData->SizeX       = ThumbSize;
+	PlatformData->SizeY       = ThumbSize;
+	PlatformData->PixelFormat = PF_B8G8R8A8;
+	ThumbnailTexture->SetPlatformData(PlatformData);
+
+	ThumbnailTexture->SRGB             = true;
+	ThumbnailTexture->CompressionSettings = TC_Default;
+	ThumbnailTexture->Filter           = TF_Bilinear;
+	ThumbnailTexture->NeverStream      = true;
+	ThumbnailTexture->MipGenSettings   = TMGS_NoMipmaps;
+
+	FTexture2DMipMap* Mip = new FTexture2DMipMap();
+	PlatformData->Mips.Add(Mip);
+	Mip->SizeX = ThumbSize;
+	Mip->SizeY = ThumbSize;
+
+	Mip->BulkData.Lock(LOCK_READ_WRITE);
+	uint8* MipData = reinterpret_cast<uint8*>(Mip->BulkData.Realloc(ThumbSize * ThumbSize * 4));
+
+	// FColor is RGBA; PF_B8G8R8A8 on disk is BGRA
+	for (int32 Idx = 0; Idx < ThumbSize * ThumbSize; ++Idx)
+	{
+		MipData[Idx * 4 + 0] = Pixels[Idx].B;
+		MipData[Idx * 4 + 1] = Pixels[Idx].G;
+		MipData[Idx * 4 + 2] = Pixels[Idx].R;
+		MipData[Idx * 4 + 3] = Pixels[Idx].A;
+	}
+
+	Mip->BulkData.Unlock();
+	ThumbnailTexture->UpdateResource();
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Thumbnail generated (%dx%d)"), ThumbSize, ThumbSize);
 }
 #endif

@@ -65,6 +65,12 @@ public:
 
 #if WITH_EDITOR
 	/**
+	 * Generate a thumbnail image from raw splat data and store it in ThumbnailTexture.
+	 * Called automatically at the end of InitializeFromSplatData().
+	 */
+	void GenerateThumbnail(const TArray<struct FGaussianSplatData>& InSplats);
+
+	/**
 	 * Build Nanite cluster hierarchy from source PLY file
 	 * This re-reads the source file and builds cluster data
 	 * @return True if successful, false if source file not found or build failed
@@ -184,6 +190,15 @@ public:
 	 */
 	UPROPERTY()
 	int32 OriginalSplatCount = 0;
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Thumbnail image generated at import time.
+	 * Stored persistently in the asset package so the Content Browser can display it.
+	 */
+	UPROPERTY()
+	TObjectPtr<UTexture2D> ThumbnailTexture;
+#endif
 
 public:
 	/**
