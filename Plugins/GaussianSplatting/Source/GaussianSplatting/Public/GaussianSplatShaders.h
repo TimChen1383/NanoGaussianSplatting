@@ -54,6 +54,11 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(FIntPoint, ColorTextureSize)
 		SHADER_PARAMETER(uint32, PositionFormat)
 		SHADER_PARAMETER(uint32, UseDefaultColor)  // 1 = use default color (no texture), 0 = use texture
+		SHADER_PARAMETER(uint32, GlobalBaseOffset)  // Offset into global ViewDataBuffer (non-compaction global path)
+		// Global compaction path: GPU prefix-sum offsets
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, GlobalBaseOffsetsBuffer)  // prefix sums per proxy
+		SHADER_PARAMETER(uint32, ProxyIndex)               // which proxy index this dispatch belongs to
+		SHADER_PARAMETER(uint32, UseGlobalCompactionPath)  // 1 = read base from GlobalBaseOffsetsBuffer[ProxyIndex]
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -408,5 +413,68 @@ class FClusterCullingCS : public FGlobalShader
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 64);
+	}
+};
+
+//----------------------------------------------------------------------
+// Global Accumulator + Compaction prefix-sum shaders
+//----------------------------------------------------------------------
+
+/**
+ * GatherCS: 1 thread per proxy.
+ * Copies GPUResources->VisibleSplatCountBuffer[0] into GlobalVisibleCountArray[ProxyIndex].
+ */
+class FGatherVisibleCountsCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGatherVisibleCountsCS);
+	SHADER_USE_PARAMETER_STRUCT(FGatherVisibleCountsCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, PerProxyVisibleCount)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalVisibleCountArray)
+		SHADER_PARAMETER(uint32, ProxyIndex)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("GATHER_CS"), 1);
+	}
+};
+
+/**
+ * PrefixSumCS: 1 thread total.
+ * Computes prefix sums over GlobalVisibleCountArray and writes all indirect
+ * dispatch/draw args for the global Phase-3 passes (CalcDistances, RadixSort, DrawSplats).
+ */
+class FPrefixSumVisibleCountsCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FPrefixSumVisibleCountsCS);
+	SHADER_USE_PARAMETER_STRUCT(FPrefixSumVisibleCountsCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>,   GlobalVisibleCountArray)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalBaseOffsets)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalCalcDistIndirectArgs)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalSortIndirectArgs)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalSortParams)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalDrawIndirectArgs)
+		SHADER_PARAMETER(uint32, ProxyCount)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("VISIBLE_PREFIX_SUM_CS"), 1);
 	}
 };

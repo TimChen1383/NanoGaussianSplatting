@@ -43,6 +43,12 @@ float SplatScale;
 uint2 ColorTextureSize;
 uint PositionFormat; // 0=Float32 (only supported format now)
 uint UseDefaultColor; // 1 = use default color (no texture available), 0 = use texture
+uint GlobalBaseOffset; // Offset into global ViewDataBuffer (for multi-proxy global accumulator, non-compaction path)
+
+// Global compaction path: read per-proxy base offset from GPU prefix-sum buffer
+StructuredBuffer<uint> GlobalBaseOffsetsBuffer; // [MAX_PROXY_COUNT+1] prefix sums
+uint ProxyIndex;             // Index of this proxy in the global array
+uint UseGlobalCompactionPath; // 1 = read offset from GlobalBaseOffsetsBuffer[ProxyIndex]
 
 // Check if a leaf cluster is visible using the visibility bitmap
 bool IsClusterVisible(uint clusterIndex)
@@ -73,6 +79,13 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		{
 			return;
 		}
+
+		// Determine the base offset for writing into ViewDataBuffer.
+		// Global compaction path: read GPU-computed prefix sum for this proxy.
+		// Per-proxy path: use the CPU-supplied GlobalBaseOffset (typically 0).
+		uint CompactionGlobalBase = UseGlobalCompactionPath
+			? GlobalBaseOffsetsBuffer[ProxyIndex]
+			: GlobalBaseOffset;
 
 		// Read actual splat index from compacted list
 		uint splatIndex = CompactedSplatIndices[threadIndex];
@@ -123,7 +136,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.Axis2 = float2(0, 0);
 			viewData.ClusterID = selectedClusterID;
 			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[threadIndex] = viewData;  // OUTPUT TO threadIndex!
+			ViewDataBuffer[CompactionGlobalBase + threadIndex] = viewData;
 			return;
 		}
 
@@ -178,7 +191,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.Axis2 = float2(0, 0);
 			viewData.ClusterID = selectedClusterID;
 			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[threadIndex] = viewData;  // OUTPUT TO threadIndex!
+			ViewDataBuffer[CompactionGlobalBase + threadIndex] = viewData;
 			return;
 		}
 
@@ -187,7 +200,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		float3 shColor = colorOpacity.rgb;  // Using DC only
 		float3 finalColor = pow(max(shColor, 0.0), 2.2);
 
-		// Store view data at COMPACTED index (threadIndex)
+		// Store view data at compacted index (CompactionGlobalBase + threadIndex)
 		FGaussianSplatViewData viewData;
 		viewData.ClipPosition = clipPos;
 		viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
@@ -196,7 +209,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		viewData.Axis2 = axis2;
 		viewData.ClusterID = selectedClusterID;
 		viewData.Padding = selectedLODLevel;
-		ViewDataBuffer[threadIndex] = viewData;  // OUTPUT TO threadIndex!
+		ViewDataBuffer[CompactionGlobalBase + threadIndex] = viewData;
 		return;
 	}
 
@@ -233,7 +246,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				viewData.Axis2 = float2(0, 0);
 				viewData.ClusterID = clusterIndex;
 				viewData.Padding = 1; // Non-zero indicates LOD level
-				ViewDataBuffer[splatIndex] = viewData;
+				ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
 				return;
 			}
 			selectedClusterID = clusterIndex;
@@ -261,7 +274,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				viewData.Axis2 = float2(0, 0);
 				viewData.ClusterID = selectedClusterID;
 				viewData.Padding = selectedLODLevel;
-				ViewDataBuffer[splatIndex] = viewData;
+				ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
 				return;
 			}
 
@@ -277,7 +290,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				viewData.Axis2 = float2(0, 0);
 				viewData.ClusterID = selectedClusterID;
 				viewData.Padding = selectedLODLevel;
-				ViewDataBuffer[splatIndex] = viewData;
+				ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
 				return;
 			}
 		}
@@ -329,7 +342,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		viewData.Axis2 = float2(0, 0);
 		viewData.ClusterID = selectedClusterID;
 		viewData.Padding = selectedLODLevel;
-		ViewDataBuffer[splatIndex] = viewData;
+		ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
 		return;
 	}
 
@@ -402,7 +415,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.Axis2 = float2(0, 0);
 			viewData.ClusterID = selectedClusterID;
 			viewData.Padding = selectedLODLevel;
-			ViewDataBuffer[splatIndex] = viewData;
+			ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
 			return;
 		}
 	}
@@ -459,5 +472,5 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	viewData.ClusterID = selectedClusterID;
 	viewData.Padding = selectedLODLevel;
 
-	ViewDataBuffer[splatIndex] = viewData;
+	ViewDataBuffer[GlobalBaseOffset + splatIndex] = viewData;
 }

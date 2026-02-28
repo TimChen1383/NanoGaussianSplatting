@@ -6,6 +6,7 @@
 #include "Modules/ModuleManager.h"
 #include "Containers/Ticker.h"
 #include "RendererInterface.h"
+#include "GaussianGlobalAccumulator.h"
 
 class FGaussianSplatViewExtension;
 
@@ -37,6 +38,9 @@ private:
 
 	/** Post opaque render delegate handle */
 	FDelegateHandle PostOpaqueRenderDelegateHandle;
+
+	/** Global GPU accumulator for one-draw-call path (render-thread owned) */
+	TUniquePtr<FGaussianGlobalAccumulator> GlobalAccumulator;
 
 	/** Render callback */
 	void OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters& Parameters);

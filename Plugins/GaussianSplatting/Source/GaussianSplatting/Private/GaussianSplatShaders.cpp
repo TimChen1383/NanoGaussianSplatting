@@ -24,3 +24,7 @@ IMPLEMENT_GLOBAL_SHADER(FPrepareIndirectArgsCS, "/Plugin/GaussianSplatting/Priva
 
 // NOTE: GPU-driven LOD shaders removed in unified approach
 // LOD splats are now processed by CalcViewData.usf using the same buffers as original splats
+
+// Global accumulator + compaction prefix-sum shaders
+IMPLEMENT_GLOBAL_SHADER(FGatherVisibleCountsCS,     "/Plugin/GaussianSplatting/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FPrefixSumVisibleCountsCS,  "/Plugin/GaussianSplatting/Private/GlobalAccumulatorPrefixSum.usf", "MainCS", SF_Compute);

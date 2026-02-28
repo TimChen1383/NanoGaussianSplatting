@@ -9,6 +9,7 @@
 
 class FGaussianSplatSceneProxy;
 class FGaussianSplatGPUResources;
+struct FGaussianGlobalAccumulator;
 
 /**
  * Handles the rendering of Gaussian Splats
@@ -157,6 +158,141 @@ public:
 	static void DispatchCalcDistancesIndirect(
 		FRHICommandListImmediate& RHICmdList,
 		FGaussianSplatGPUResources* GPUResources
+	);
+
+	//----------------------------------------------------------------------
+	// Global Accumulator dispatch (one-draw-call path)
+	//----------------------------------------------------------------------
+
+	/**
+	 * Dispatch CalcViewData writing into GlobalAccumulator->GlobalViewDataBuffer
+	 * at GlobalBaseOffset, instead of the per-proxy ViewDataBuffer.
+	 */
+	static void DispatchCalcViewDataGlobal(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		int32 SplatCount,
+		int32 SHOrder,
+		float OpacityScale,
+		float SplatScale,
+		bool bHasColorTexture,
+		bool bUseLODRendering,
+		uint32 GlobalBaseOffset,
+		FGaussianGlobalAccumulator* GlobalAccumulator
+	);
+
+	/**
+	 * Dispatch CalcDistances over the full global ViewDataBuffer.
+	 * Must be called after all Phase-1 CalcViewData dispatches.
+	 */
+	static void DispatchCalcDistancesGlobal(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		int32 TotalSplatCount
+	);
+
+	/**
+	 * Dispatch radix sort over the full global distance/key buffers.
+	 */
+	static void DispatchRadixSortGlobal(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		int32 TotalSplatCount
+	);
+
+	/**
+	 * Draw all splats using global sorted keys and ViewData.
+	 * Borrows the IndexBuffer from the first valid proxy.
+	 */
+	static void DrawSplatsGlobal(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		FBufferRHIRef IndexBuffer,
+		int32 TotalSplatCount,
+		int32 DebugMode
+	);
+
+	//----------------------------------------------------------------------
+	// Global Accumulator + Nanite Compaction dispatch (one-draw-call path)
+	// Phase sequence: GatherVisibleCount × N → PrefixSumVisibleCounts ×1 →
+	//   CalcViewDataCompactedGlobal × N → CalcDistancesGlobalIndirect ×1 →
+	//   RadixSortGlobalIndirect ×1 → DrawSplatsGlobalIndirect ×1
+	//----------------------------------------------------------------------
+
+	/**
+	 * Copy GPUResources->VisibleSplatCountBuffer[0] into
+	 * GlobalAccumulator->GlobalVisibleCountArrayBuffer[ProxyIndex].
+	 * Dispatch: (1,1,1) per proxy, after DispatchCompactSplats.
+	 */
+	static void DispatchGatherVisibleCount(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		int32 ProxyIndex
+	);
+
+	/**
+	 * Compute exclusive prefix sums over GlobalVisibleCountArray and write
+	 * all indirect dispatch/draw args for Phase-3 passes.
+	 * Dispatch: (1,1,1) once, after all GatherVisibleCount dispatches.
+	 */
+	static void DispatchPrefixSumVisibleCounts(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		int32 ProxyCount
+	);
+
+	/**
+	 * CalcViewData for proxy ProxyIndex, writing into GlobalViewDataBuffer
+	 * at offset GlobalBaseOffsetsBuffer[ProxyIndex].
+	 * Uses IndirectDispatchArgsBuffer from GPUResources (set by PrepareIndirectArgs).
+	 */
+	static void DispatchCalcViewDataCompactedGlobal(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		int32 SplatCount,
+		int32 OriginalSplatCount,
+		int32 SHOrder,
+		float OpacityScale,
+		float SplatScale,
+		bool bHasColorTexture,
+		int32 ProxyIndex,
+		FGaussianGlobalAccumulator* GlobalAccumulator
+	);
+
+	/**
+	 * CalcDistances over the global ViewDataBuffer using indirect dispatch
+	 * (count from GlobalCalcDistIndirectArgsBuffer written by PrefixSumCS).
+	 */
+	static void DispatchCalcDistancesGlobalIndirect(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianGlobalAccumulator* GlobalAccumulator
+	);
+
+	/**
+	 * Radix sort over the global distance/key buffers using indirect dispatch
+	 * (count/numTiles from GlobalSortParamsBuffer written by PrefixSumCS).
+	 */
+	static void DispatchRadixSortGlobalIndirect(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianGlobalAccumulator* GlobalAccumulator
+	);
+
+	/**
+	 * Draw all visible splats using GlobalDrawIndirectArgsBuffer
+	 * (instance count written by PrefixSumCS, not a CPU constant).
+	 */
+	static void DrawSplatsGlobalIndirect(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		FBufferRHIRef IndexBuffer,
+		int32 DebugMode
 	);
 
 private:

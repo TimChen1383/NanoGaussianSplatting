@@ -1,0 +1,100 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+//
+// GlobalAccumulatorPrefixSum.usf
+#include "/Engine/Public/Platform.ush"
+//
+// Two small compute shaders used by the GlobalAccumulator+Nanite compaction path:
+//
+//  GATHER_CS          - 1 thread per proxy; copies the GPU-side VisibleSplatCount
+//                       into a flat array (GlobalVisibleCountArray).
+//
+//  VISIBLE_PREFIX_SUM_CS - 1 thread total; performs prefix-sum over the gathered
+//                       counts and writes all indirect-dispatch/draw args so that
+//                       Phase 2 (CalcViewData, CalcDistances, RadixSort, DrawSplats)
+//                       can all run with GPU-driven counts.
+
+//------------------------------------------------------------------------------
+// GATHER_CS
+//   Input:  PerProxyVisibleCount[0]  (uint, from FCompactSplatsCS atomic output)
+//   Output: GlobalVisibleCountArray[ProxyIndex]
+//   Dispatch: (1, 1, 1) per proxy
+//------------------------------------------------------------------------------
+#if GATHER_CS
+
+StructuredBuffer<uint>    PerProxyVisibleCount;
+RWStructuredBuffer<uint>  GlobalVisibleCountArray;
+uint ProxyIndex;
+
+[numthreads(1, 1, 1)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+	GlobalVisibleCountArray[ProxyIndex] = PerProxyVisibleCount[0];
+}
+
+#endif // GATHER_CS
+
+
+//------------------------------------------------------------------------------
+// VISIBLE_PREFIX_SUM_CS
+//   Computes exclusive prefix sums over GlobalVisibleCountArray[0..ProxyCount-1]
+//   and writes all indirect dispatch/draw arguments for the global Phase-3 passes.
+//
+//   Output layout:
+//     GlobalBaseOffsets[i]          = sum(GlobalVisibleCountArray[0..i-1])
+//     GlobalBaseOffsets[ProxyCount] = TotalVisible  (sentinel)
+//
+//     GlobalCalcDistIndirectArgs    = { ceil(TotalVisible/256), 1, 1 }
+//     GlobalSortIndirectArgs        = { ceil(TotalVisible/1024), 1, 1 }
+//     GlobalSortParams              = { TotalVisible, NumTiles }
+//     GlobalDrawIndirectArgs        = { 6, TotalVisible, 0, 0, 0 }
+//
+//   Dispatch: (1, 1, 1) once after all GatherCS dispatches
+//------------------------------------------------------------------------------
+#if VISIBLE_PREFIX_SUM_CS
+
+StructuredBuffer<uint>    GlobalVisibleCountArray;
+RWStructuredBuffer<uint>  GlobalBaseOffsets;
+RWStructuredBuffer<uint>  GlobalCalcDistIndirectArgs;
+RWStructuredBuffer<uint>  GlobalSortIndirectArgs;
+RWStructuredBuffer<uint>  GlobalSortParams;
+RWStructuredBuffer<uint>  GlobalDrawIndirectArgs;
+uint ProxyCount;
+
+[numthreads(1, 1, 1)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+	uint offset = 0u;
+	for (uint i = 0u; i < ProxyCount; i++)
+	{
+		GlobalBaseOffsets[i] = offset;
+		offset += GlobalVisibleCountArray[i];
+	}
+	GlobalBaseOffsets[ProxyCount] = offset;  // TotalVisible sentinel
+
+	// Guard against zero (pathological case — dispatching 0 groups is invalid)
+	uint numGroups256  = max((offset + 255u)  / 256u,  1u);
+	uint numTiles1024  = max((offset + 1023u) / 1024u, 1u);
+
+	// CalcDistances: 256 threads per group
+	GlobalCalcDistIndirectArgs[0] = numGroups256;
+	GlobalCalcDistIndirectArgs[1] = 1u;
+	GlobalCalcDistIndirectArgs[2] = 1u;
+
+	// CountCS / ScatterCS: 1024 threads per tile = numTiles1024 groups
+	GlobalSortIndirectArgs[0] = numTiles1024;
+	GlobalSortIndirectArgs[1] = 1u;
+	GlobalSortIndirectArgs[2] = 1u;
+
+	// SortParams read by CountCS/PrefixSumCS/ScatterCS when UseIndirectSort=1
+	GlobalSortParams[0] = offset;       // Count
+	GlobalSortParams[1] = numTiles1024; // NumTiles
+
+	// DrawIndexedIndirect: { IndexCountPerInstance=6, InstanceCount, StartIndex, BaseVertex, StartInstance }
+	GlobalDrawIndirectArgs[0] = 6u;
+	GlobalDrawIndirectArgs[1] = offset;
+	GlobalDrawIndirectArgs[2] = 0u;
+	GlobalDrawIndirectArgs[3] = 0u;
+	GlobalDrawIndirectArgs[4] = 0u;
+}
+
+#endif // VISIBLE_PREFIX_SUM_CS

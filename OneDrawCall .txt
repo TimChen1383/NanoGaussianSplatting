@@ -1,0 +1,174 @@
+ONE DRAW CALL FOR EVERYTHING
+=============================
+
+BRIEF
+-----
+Currently, each GaussianSplatComponent (tile/proxy) runs its own full GPU pipeline:
+  CalcViewData → CalcDistances → 16x RadixSort dispatches → DrawSplats
+
+For N tiles visible at once, that is N × ~19 GPU dispatches and N draw calls.
+
+The "One draw call for everything" technique merges all visible proxies into a single
+global GPU buffer at the start of each frame, then runs one global sort and one global
+draw call across all splats from all proxies.
+
+New execution flow:
+  Phase 1 (per-proxy): N × CalcViewData  →  writes into GlobalViewDataBuffer at a
+                        per-proxy offset (GlobalBaseOffset)
+  Phase 2 (global):    1 × CalcDistances + 16 × RadixSort + 1 × DrawSplats
+
+Dispatch count: 10 tiles → was ~190 dispatches, becomes ~30 dispatches.
+
+
+WHY IT HELPS THIS PLUGIN
+------------------------
+1. CORRECT CROSS-TILE ALPHA BLENDING
+   Splats from different proxies that are spatially interleaved are currently NOT sorted
+   relative to each other. Each proxy sorts only its own splats. A global sort fixes this
+   and produces correct back-to-front order across the entire scene.
+
+2. FEWER GPU DISPATCHES / LOWER OVERHEAD
+   GPU dispatch setup and synchronization cost accumulates. Going from ~190 to ~30
+   dispatches for 10 tiles reduces driver overhead and improves frame pacing.
+
+3. ONE PIPELINE STAGE INSTEAD OF N
+   CalcDistances and RadixSort are the heaviest compute stages. Running them once on the
+   merged buffer is more cache-friendly and more efficient than running them N times on
+   N small independent buffers.
+
+4. CAMERA-STATIC SKIP SCALES BETTER
+   When all proxies are static and the camera hasn't moved, the entire Phase 2 can be
+   skipped (already implemented per-proxy; now applies to everything at once).
+
+5. NO HLOD NEEDED FOR DRAW CALL MERGING
+   Nanite clusters already handle per-tile LOD (root cluster = few splats when far away).
+   This global accumulator replaces what HLOD would do for draw call consolidation,
+   without needing to bake combined assets.
+
+
+NEW DATA STRUCTURES
+-------------------
+struct FProxySliceInfo
+{
+    FGaussianSplatSceneProxy* Proxy;
+    uint32 GlobalBaseOffset;   // byte/element offset into global buffers
+    uint32 SplatCount;
+    bool   bNeedsUpdate;       // did this proxy's data change this frame?
+};
+
+class FGaussianGlobalAccumulator  (owned by GaussianSplatting module / ViewExtension)
+{
+    FRWBuffer GlobalViewDataBuffer;      // all proxy ViewData concatenated
+    FRWBuffer GlobalSortDistanceBuffer;  // sort keys (distances)
+    FRWBuffer GlobalSortKeysBuffer;      // sort values (splat indices)
+    FRWBuffer GlobalRadixHistogramBuffer;
+    FRWBuffer GlobalIndexBuffer;         // final sorted index buffer for DrawSplats
+
+    uint32 TotalSplatCount;              // sum of all proxy SplatCounts this frame
+    TArray<FProxySliceInfo> ProxySlices; // per-proxy offset table
+    bool bAnythingChanged;               // if false, skip Phase 2
+
+    // Compaction path additions (for Nanite clusters):
+    FRWBuffer GlobalSortIndirectArgs;    // one entry total (GPU-driven count)
+    FRWBuffer GlobalSortParamsBuffer;    // {Count, NumTiles}
+};
+
+
+TO-DO LIST
+----------
+Task 1 — Create FGaussianGlobalAccumulator class
+  - New files: GaussianGlobalAccumulator.h / .cpp
+  - Holds all global GPU buffers listed above
+  - ResizeIfNeeded(uint32 NewTotalCount) method that reallocates when capacity exceeded
+  - Reset() clears ProxySlices and TotalSplatCount each frame before Phase 1
+  - Owned by FGaussianSplattingModule (or FGaussianSplatViewExtension)
+
+Task 2 — Add GlobalBaseOffset uniform to CalcViewData.usf
+  - Add a uint GlobalBaseOffset parameter to FCalcViewDataCS shader
+  - Shader writes: GlobalViewDataBuffer[GlobalBaseOffset + localIdx] = ...
+  - Output buffer target is GlobalViewDataBuffer, not per-proxy ViewDataBuffer
+  - Keep per-proxy ViewDataBuffer for backward compat until old path is removed
+
+Task 3 — Add global dispatch methods to GaussianSplatRenderer
+  - DispatchCalcViewDataGlobal(Proxy, GlobalBaseOffset, GlobalViewDataBuffer)
+  - DispatchCalcDistancesGlobal(GlobalViewDataBuffer, GlobalSortDistanceBuffer, TotalCount)
+  - DispatchRadixSortGlobal(GlobalSortDistanceBuffer, GlobalSortKeysBuffer, ...)
+  - DrawSplatsGlobal(GlobalViewDataBuffer, GlobalSortKeysBuffer, GlobalIndexBuffer)
+
+Task 4 — Remove per-proxy sort buffers from FGaussianSplatGPUResources
+  - SortDistanceBuffer, SortDistanceAltBuffer, SortKeysBuffer, SortKeysAltBuffer
+  - RadixHistogramBuffer
+  - These move to FGaussianGlobalAccumulator
+  - Keep per-proxy ViewDataBuffer only if compaction path still needs it locally
+    (or redirect compaction output to a global compacted staging area)
+
+Task 5 — Modify OnPostOpaqueRender to use two-phase loop
+  Phase 1 loop (before barriers):
+    for each visible proxy:
+        Accumulator.ProxySlices.Add({Proxy, Accumulator.TotalSplatCount, Proxy->SplatCount})
+        Accumulator.TotalSplatCount += Proxy->SplatCount
+        DispatchCalcViewDataGlobal(Proxy, SliceInfo.GlobalBaseOffset, GlobalViewDataBuffer)
+  Barrier (UAV → SRV on GlobalViewDataBuffer)
+  Phase 2 (once):
+    DispatchCalcDistancesGlobal(...)
+    DispatchRadixSortGlobal(...)       // 16 dispatches
+    DrawSplatsGlobal(...)
+
+Task 6 — Update camera-static skip logic
+  - Old: each proxy caches its own ViewProjectionMatrix + LocalToWorld, skips if unchanged
+  - New: accumulate "bAnyProxyChanged" flag across Phase 1
+  - If !bAnyProxyChanged && camera didn't move → skip all of Phase 2 (reuse global sorted buffers)
+  - Track TotalSplatCount from last frame; if it changed, force Phase 2 even if camera static
+
+Task 7 — Handle Nanite compaction path in global accumulator
+  - Currently each proxy with Nanite clusters runs PrepareIndirectArgs + indirect sort
+  - Global path: after Phase 1 CalcViewData (which runs cluster culling + compaction per proxy),
+    each proxy writes its compacted count into a slice of GlobalSortIndirectArgs
+  - PrepareGlobalIndirectArgs sums per-proxy compacted counts into a single TotalCount
+  - Then one indirect RadixSort over the global compacted buffer
+  - This is the most complex task; can be deferred until core (non-compaction) path works
+
+Task 8 — Update DrawSplatsGlobal shader bindings
+  - GaussianSplatRendering.usf: bind GlobalViewDataBuffer (SRV) instead of per-proxy buffer
+  - Vertex shader reads: GlobalViewDataBuffer[SortedIndex]  (SortedIndex already global)
+  - No change needed to vSplatIndex or per-splat logic; the index arithmetic handles it
+
+Task 9 — Resize global buffers dynamically
+  - On first frame or when TotalSplatCount grows, call ResizeIfNeeded()
+  - ResizeIfNeeded should add 10-20% headroom to avoid per-frame realloc
+  - Log a warning if realloc happens mid-session (indicates streaming added new tiles)
+
+Task 10 — Add CVars for fallback / debugging
+  - r.GaussianSplat.UseGlobalAccumulator (default 1)
+  - r.GaussianSplat.GlobalAccumulatorDebug (default 0, shows per-proxy slice boundaries)
+  - Keep old per-proxy path behind the CVar for regression testing
+
+Task 11 — Profile and validate correctness
+  - Visual check: alpha blending at tile boundaries should be artifact-free
+  - RenderDoc capture: verify single DrawIndexedInstanced call in frame
+  - GPU timing: compare Phase 1+2 vs old N×pipeline for 5, 10, 20 proxy counts
+  - Regression: camera-static skip must still eliminate Phase 2 when nothing moves
+
+Task 12 — Clean up per-proxy buffers once global path is stable
+  - Remove SortDistanceBuffer / SortKeysBuffer / RadixHistogramBuffer allocs from proxy
+  - Remove per-proxy DrawSplats call path
+  - Update GaussianSplatGPUResources to only hold ViewDataBuffer + cluster/compaction buffers
+
+Task 13 — Update Architecture.txt and memory notes
+  - Document the two-phase execution model
+  - Note the GlobalBaseOffset shader uniform pattern
+  - Note that HLOD is now fully superseded by this + Nanite clusters
+
+
+RECOMMENDED IMPLEMENTATION ORDER
+----------------------------------
+1 → 2 → 3 → 5 (core pipeline, old buffers still exist)
+→ 9 (resize)
+→ 6 (camera-static skip)
+→ 8 (draw call binding)
+→ 10 (CVars)
+→ 11 (validate)
+→ 4 (remove old buffers)
+→ 7 (compaction path, last because most complex)
+→ 12 (cleanup)
+→ 13 (docs)
