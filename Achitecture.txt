@@ -5,7 +5,7 @@
 ***整理筆記
 ***初始效能慢 > 不知道為什麼要等一下效能才會上來!?
 ***再對比一次Nanite, spark, supersplat的設計
-***製作collision > 用point去產生bounding box就好 > 加一個asset action check box
+***製作collision > 用point去產生bounding box就好 > 加一個asset action check box > console command preview collision
 ***先做一個tile切割器，再開nanite跟level streaming就好
 ***Asset好像是反的
 ***測試多種PLY，兼容性問題	
