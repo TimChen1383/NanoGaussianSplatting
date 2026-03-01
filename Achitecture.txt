@@ -9,17 +9,20 @@
 ***先做一個tile切割器，再開nanite跟level streaming就好
 ***Asset好像是反的
 ***測試多種PLY，兼容性問題	
-***gs.MaxRenderBudget??
+***gs.MaxRenderBudget >> 超過一個數量會突然有一大群不見 > 這個會控制VRAM不爆掉，但不見好怪 > 我猜是超過設定的看就直接不渲染了? 但應該要從遠處開始消失
 ***gs.UseGlobalAccumulator > do we need this? This should always be on right?
 ***大地形肯定是要切成多塊單元的，不管是asset還是地形，邏輯其實都一樣
 ***Code review
 ***Demo - 用野柳+火災狗
 ***Make file smaller: https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/
-tumbnail壞了
+***tumbnail壞了
+***4000萬還是一個檻
 **************************************************************************************************
 
 
+500000*70 > 35000000
 
+3M的檻具體是什麼意思? 而且改這個VRAM會上升非常快
 
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]
