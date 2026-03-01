@@ -1,6 +1,5 @@
 
 [To Do list]
-***理論上我hook在最前面就能打光對不對? 目前應該打不了光 > LCC有lit跟unlit mode >現在其實是hook在translucency前面(PostOpaqueRenderDelegate) > 但打光不是必要的，畢竟原本的光也是bake在裡面了 > 第一版應該不用做到這個
 ***SH function目前是失敗的
 *bulkdata有大小限制 > aerial的野柳超出bulk data的大小 > 沒關係，不用到那麼大
 ***整理筆記
@@ -13,18 +12,11 @@
 ***gs.MaxRenderBudget??
 ***gs.UseGlobalAccumulator > do we need this? This should always be on right?
 ***大地形肯定是要切成多塊單元的，不管是asset還是地形，邏輯其實都一樣
+***Code review
+***Demo - 用野柳+火災狗
+***Make file smaller: https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/
+tumbnail壞了
 **************************************************************************************************
-
-[LOD切換更不明顯一點]
-	- force各LOD看細節如何
-	- LOD 2,3,4,5好像都有一些洞 > 但遠看其實看不到那些洞
-	- 點的數量很少或很多的情況怎麼辦
-	- 單一大塊場景用nanite好像沒幫助，多個小asset好像比較有幫助
-	- 對比一下Nanite的cluster切換是長怎樣 > 怎麼感覺Nanite切得更碎片化
-	- LOD切換的時候顏色會有誤差
-	- 看一下顏色變化很大的地方出現在哪個時間點 > 主要是因為什麼LOD切換造成的? 錄影好了，因為我覺得前面的轉換沒什麼問題 
-	- 前後遮擋是否有做culling? 應該要做culling (Occlusion culling)
-	- 有沒有辦法可以確認近看遠看的樣子還是很接近? 好像是密度跟顏色差異造成的?
 
 
 
