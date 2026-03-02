@@ -50,6 +50,6 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - `gs.ShowClusterBounds 2`: show LOD cluster in different color
 - `gs.DebugForceLODLevel ?`: force render a specific LOD cluster for debugging purpose (can be 1,2,3,4...)
 - `gs.LODErrorThreshold ?`: adjust the threshold of screen space error (8-128)
-- `gs.MaxRenderBudget ?`: Maximum number of visible splats(after culling) that can be rendered per frame (default 3,000,000)
+- `gs.MaxRenderBudget ?`: Maximum number of visible splats(after culling) that can be rendered per frame. Saving VRAM (default 3,000,000. 0 will set to unlimited)
 
 
