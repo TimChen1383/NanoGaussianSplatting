@@ -22,6 +22,7 @@
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
 extern TAutoConsoleVariable<float> CVarLODErrorThreshold;
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
+extern TAutoConsoleVariable<int32> CVarUseSHRendering;
 
 FGaussianSplatRenderer::FGaussianSplatRenderer()
 {
@@ -111,7 +112,12 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	);
 
 	Parameters.SplatCount = SplatCount;
-	Parameters.SHOrder = SHOrder;
+	// Use effective SH order: min(requested order, available data)
+	int32 EffectiveSHOrder = FMath::Min(SHOrder, GPUResources->GetSHBands());
+	Parameters.SHOrder = EffectiveSHOrder;
+	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
+	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
 
@@ -724,7 +730,12 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	);
 
 	Parameters.SplatCount = SplatCount;
-	Parameters.SHOrder = SHOrder;
+	// Use effective SH order: min(requested order, available data)
+	int32 EffectiveSHOrder = FMath::Min(SHOrder, GPUResources->GetSHBands());
+	Parameters.SHOrder = EffectiveSHOrder;
+	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
+	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
 
@@ -854,7 +865,12 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	);
 
 	Parameters.SplatCount = SplatCount;
-	Parameters.SHOrder = SHOrder;
+	// Use effective SH order: min(requested order, available data)
+	int32 EffectiveSHOrder = FMath::Min(SHOrder, GPUResources->GetSHBands());
+	Parameters.SHOrder = EffectiveSHOrder;
+	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
+	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
 	Parameters.SplatScale = SplatScale;
 
@@ -1274,7 +1290,12 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	);
 
 	Parameters.SplatCount    = SplatCount;
-	Parameters.SHOrder       = SHOrder;
+	// Use actual available SH data, not requested SH order
+	int32 EffectiveSHOrder = FMath::Min(SHOrder, GPUResources->GetSHBands());
+	Parameters.SHOrder       = EffectiveSHOrder;
+	// SH buffer includes DC + higher-order coefficients: band1=4, band2=9, band3=16
+	Parameters.NumSHCoeffs   = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
+	Parameters.UseSHRendering = CVarUseSHRendering.GetValueOnRenderThread() && (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale  = OpacityScale;
 	Parameters.SplatScale    = SplatScale;
 

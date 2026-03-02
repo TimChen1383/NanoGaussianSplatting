@@ -34,6 +34,8 @@ float2 ScreenSize;
 float2 FocalLength;
 uint SplatCount;
 uint SHOrder;
+uint NumSHCoeffs;      // Total SH coefficients including DC (4, 9, or 16)
+uint UseSHRendering;   // 1 = use view-dependent SH evaluation, 0 = use pre-computed DC color
 float OpacityScale;
 float SplatScale;
 uint GlobalBaseOffset; // Offset into global ViewDataBuffer (for multi-proxy global accumulator, non-compaction path)
@@ -144,9 +146,49 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		return;
 	}
 
-	// Color: sRGB → linear conversion
-	// Packed color stores sRGB values as uint8. Convert to linear for UE SceneColor.
-	float3 finalColor = pow(max(colorOpacity.rgb, 0.0), 2.2);
+	// Compute final color
+	float3 finalColor;
+
+	if (UseSHRendering && NumSHCoeffs > 0)
+	{
+		// View-dependent SH rendering
+		// Load SH coefficients from buffer (DC + higher-order)
+		float3 shDC;
+		float3 sh[15];
+		LoadSH(SHBuffer, splatIndex, NumSHCoeffs, shDC, sh);
+
+		// Compute view direction in world space (FROM splat TO camera)
+		// This matches Unity's convention: worldViewDir = camera - splatPos
+		float3 viewDirWorld = normalize(CameraPosition - worldPos.xyz);
+
+		// Transform view direction from UE world space to PLY/COLMAP space
+		// UE: X-forward, Y-right, Z-up
+		// PLY/COLMAP: X-right, Y-down, Z-forward
+		// Mapping: UE(X,Y,Z) -> PLY(Y,-Z,X)
+		// NOTE: This assumes the asset has no rotation in UE (identity LocalToWorld rotation)
+		float3 viewDirPLY = float3(viewDirWorld.y, -viewDirWorld.z, viewDirWorld.x);
+
+		// Negate to match Unity's ShadeSH which does "dir *= -1" internally
+		// This converts from splat->camera to camera->splat direction
+		viewDirPLY = -viewDirPLY;
+
+		// Evaluate spherical harmonics with view direction
+		float3 shColor = EvaluateSH(viewDirPLY, shDC, sh, SHOrder);
+
+		// Convert SH result to displayable color (add 0.5 offset)
+		// This produces sRGB color values (same as f_dc storage format)
+		shColor = 0.5 + shColor;
+
+		// Convert sRGB to linear for UE's linear SceneColor buffer
+		// This matches the non-SH path which also applies pow(x, 2.2)
+		finalColor = pow(max(shColor, 0.0), 2.2);
+	}
+	else
+	{
+		// DC-only rendering (use pre-computed color from packed buffer)
+		// Packed color stores sRGB values as uint8. Convert to linear for UE SceneColor.
+		finalColor = pow(max(colorOpacity.rgb, 0.0), 2.2);
+	}
 
 	// Store view data
 	FGaussianSplatViewData viewData;

@@ -1,36 +1,128 @@
 
 [To Do list]
-***Make file smaller: https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/
-***VRAM看能不能再壓縮，目前100隻Llama VRAM會到11GB
-***初始效能慢 > 不知道為什麼要等一下效能才會上來!? > 再跑一次insight
+
+
+
 ***再對比一次Nanite, spark, supersplat的設計
 ***測試多種PLY，兼容性問題 > 沒有SH資料就補0，mapping才不會錯
 ***整理筆記
-***Code review
+***Code review > not architecture related
 ***Demo - 野柳+小馬
 ***先做一個tile切割器，再開nanite跟level streaming就好,地形肯定要切成多塊單元，不管是asset還是地形邏輯其實都一樣
 ***條列有開放出來的重要API > list what feature exposed to blueprint
 **************************************************************************************************
 
-This is the Unreal Engine plugin I created called Gaussian Splatting "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-It can import and render gaussian splatting PLY file inside Unreal Engine.
 
-Previously the f_rest data in the PLY file does not render correctly so I disabled it.
-I want to make it work now.
-I want the plugin to support standard PLY format.
-Help me make the plugin that can read and render the f_rest data from the PLY file.
-Make sure to deal carefully with the data mapping.
-Previous we usually messed up the data of postion, rotation, scale....
-As the result the gaussian splats became a mess.
-The imported PLY file, uasset to GPU should have data mapped correctly0 
+This is the Unreal Engine plugin I created "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
+It can import and render Gaussian Splatting PLY file inside Unreal Engine.
+
+However the SH Render has some issue.
+When looking at the asset at lower angle, it is a bit green.
+When looking at the asset at higher angle, it is a bit red.
+If I turned off SH Render then the color looks corect.
+Can you investigate what happened?
+Just investigate and don't modify the code.
+I learn the gaussian splatting render from the Unity plugin.
+Use it as the reference and see is there any difference between SH Render.
+D:\GitHub\UEGaussianSplatting\UnityGaussianSplatting
+Make sure to take Unreal Engine's coordinate and Unity's coordinate into consideration.
+Maybe check the data mapping as well.
+Previously our data mapping from PLY to uasset to GPU render used to has some error.
+We fixed a lot of time.
 
 
 
+----------------------------------------------------------------------------------
+  Investigation Summary: SH Rendering Color Shift Issue
+
+  Symptom
+
+  - Lower viewing angle (camera below, looking up): GREEN tint
+  - Higher viewing angle (camera above, looking down): RED tint
+  - Colors correct when SH rendering is disabled
+
+  Key Comparison: Unity vs UE Approach
+
+  Unity's Approach:
+  1. PLY Import: No coordinate transformation - PLY data used AS-IS (PLY space = Unity space)
+  2. Runtime: View direction transformed to object space via _MatrixWorldToObject matrix:
+  float3 objViewDir = mul((float3x3)_MatrixWorldToObject, worldViewDir);
+  3. SH Evaluation: Direction negated inside ShadeSH:
+  dir *= -1;
+  res += SH_C1 * (-splat.sh1 * y + splat.sh2 * z - splat.sh3 * x);
+
+  UE's Approach:
+  1. PLY Import: Positions transformed from PLY to UE space:
+    - UE.X = PLY.Z (forward)
+    - UE.Y = PLY.X (right)
+    - UE.Z = -PLY.Y (up, negated)
+    - SH coefficients NOT transformed (remain in PLY space)
+  2. Runtime: View direction transformed via hardcoded coordinate mapping:
+  float3 viewDirPLY = float3(viewDirWorld.y, -viewDirWorld.z, viewDirWorld.x);
+  viewDirPLY = -viewDirPLY;
+  3. SH Evaluation:
+  result += SH_C1 * (-y * sh[0] + z * sh[1] - x * sh[2]);
+
+  What I Verified as Correct
+
+  1. SH coefficient storage order: Both Unity and UE convert from PLY's planar format (R0-R14, G0-G14, B0-B14) to
+  interleaved format (R0G0B0, R1G1B1, ...). ✓
+  2. Coordinate transformation math: The inverse mapping (UE.Y, -UE.Z, UE.X) correctly converts UE world direction to
+  PLY space. ✓
+  3. SH evaluation formula: Both use identical formula: SH_C1 * (-y * sh0 + z * sh1 - x * sh2). ✓
+  4. Direction negation: Both end up using camera→splat direction for evaluation. ✓
+
+  Potential Issue Found
+
+  Critical Difference: Unity transforms the view direction using the actual object transformation matrix
+  (_MatrixWorldToObject), while UE uses a hardcoded coordinate transformation that:
+
+  1. Does NOT use LocalToWorld inverse for direction transformation
+  2. Only accounts for PLY→UE coordinate system change
+  3. Does NOT account for any rotation applied to the GaussianSplat actor/component in the scene
+
+  The comment in CalcViewData.usf (line 168) explicitly states this limitation:
+  // NOTE: This assumes the asset has no rotation in UE (identity LocalToWorld rotation)
+
+  However, even with identity rotation, there could be another issue...
+
+  Deeper Investigation Needed
+
+  The vertical color shift (red↔green) specifically affecting the Y-component suggests one of these possibilities:
+
+  1. Sign error in view direction transformation: The Y-component mapping -viewDirWorld.z might have incorrect sign for
+  certain edge cases
+  2. Mismatch in SH coefficient interpretation: The SH band 1 coefficients might need to be reordered or sign-flipped
+  when the coordinate system changes (though mathematically this shouldn't be needed if view direction is transformed
+  correctly)
+  3. LocalToWorld not being identity: Even if the asset appears at default position, the LocalToWorld matrix might have
+  a baked-in rotation from the import process that the hardcoded formula doesn't account for
+  4. The transformation should use LocalToWorld inverse: Instead of the hardcoded formula, the view direction should be
+  transformed using:
+  float3 viewDirLocal = mul((float3x3)transpose(LocalToWorld), viewDirWorld);
+  4. And then apply the PLY→UE coordinate conversion to that local direction (or incorporate it into the matrix).
+
+  Would you like me to:
+  1. Check if LocalToWorld actually contains only the PLY→UE coordinate conversion?
+  2. Compare the exact LocalToWorld matrix UE uses vs what Unity's equivalent would be?
+  3. Look at whether there's a 90-degree or other rotation baked into the asset that the hardcoded formula isn't
+  accounting for?
+
+
+----------------------------------------------------------------------------------------------
 
 [SH function not working]
 	- only f_dc is working
 	- f_rest is not working
 
+
+[Smaller VRAM]
+	- VRAM看能不能再壓縮，目前100隻Llama VRAM會到11GB
+	- sparkjs example
+	- Unity plugin
+	- unity article "https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/"
+	- run memory insight
+	
 
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]
@@ -79,8 +171,8 @@ The imported PLY file, uasset to GPU should have data mapped correctly0
 -----------------------------------------------------------------------------------------
 
 [GlobalAccumulator]
--bindless rendering
--indirect rendering
+	- bindless rendering: add more details
+	- indirect rendering: add more details
 
 
 [Screen Space Projected Error]

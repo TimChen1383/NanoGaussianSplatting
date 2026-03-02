@@ -17,7 +17,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatAssetChanged, UGaussianSplat
 
 // Serialization magic/version for format identification
 #define GAUSSIAN_SPLAT_ASSET_MAGIC   0x47535056  // "GSPV"
-#define GAUSSIAN_SPLAT_ASSET_VERSION 4  // Added bEnableNanite, OriginalSplatCount
+#define GAUSSIAN_SPLAT_ASSET_VERSION 5  // SH buffer now includes DC coefficient for view-dependent rendering
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files

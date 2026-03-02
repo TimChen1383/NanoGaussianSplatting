@@ -178,15 +178,16 @@ int32 UGaussianSplatAsset::GetColorBytesPerSplat(EGaussianColorFormat Format)
 
 int32 UGaussianSplatAsset::GetSHBytesPerSplat(EGaussianSHFormat Format, int32 Bands)
 {
-	// Each band adds more coefficients: band0=1, band1=4, band2=9, band3=16 total
+	// SH buffer now includes DC coefficient for view-dependent rendering
+	// band0=0 (no buffer), band1=4 (DC + 3), band2=9 (DC + 8), band3=16 (DC + 15)
 	int32 NumCoeffs = 0;
 	switch (Bands)
 	{
-	case 0: NumCoeffs = 0; break;  // DC only (stored in color)
-	case 1: NumCoeffs = 3; break;  // 3 coeffs
-	case 2: NumCoeffs = 8; break;  // 3 + 5 coeffs
-	case 3: NumCoeffs = 15; break; // 3 + 5 + 7 coeffs
-	default: NumCoeffs = 15; break;
+	case 0: NumCoeffs = 0; break;   // DC only (stored in color, no SH buffer)
+	case 1: NumCoeffs = 4; break;   // DC + 3 coeffs
+	case 2: NumCoeffs = 9; break;   // DC + 3 + 5 coeffs
+	case 3: NumCoeffs = 16; break;  // DC + 3 + 5 + 7 coeffs
+	default: NumCoeffs = 16; break;
 	}
 
 	// Each coefficient has 3 color channels
@@ -460,11 +461,15 @@ void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)
 		return;
 	}
 
-	const int32 NumCoeffs = (SHBands == 1) ? 3 : (SHBands == 2) ? 8 : 15;
+	// Higher-order coefficients: 3 for band1, 8 for band1+2, 15 for band1+2+3
+	const int32 NumHigherCoeffs = (SHBands == 1) ? 3 : (SHBands == 2) ? 8 : 15;
+
+	// Total coefficients INCLUDING DC (SH_DC stored first for view-dependent rendering)
+	const int32 TotalCoeffs = NumHigherCoeffs + 1;  // +1 for DC
 
 	// Always store as Float16 for now (TODO: implement Norm11/Norm6 compression)
-	// Calculate actual bytes needed: NumCoeffs * 3 channels * 2 bytes per FFloat16
-	const int32 BytesPerSplat = NumCoeffs * 3 * sizeof(FFloat16);
+	// Calculate actual bytes needed: TotalCoeffs * 3 channels * 2 bytes per FFloat16
+	const int32 BytesPerSplat = TotalCoeffs * 3 * sizeof(FFloat16);
 	const int32 TotalBytes = SplatCount * BytesPerSplat;
 
 	// Lock bulk data for writing
@@ -474,10 +479,17 @@ void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)
 	for (int32 i = 0; i < SplatCount; i++)
 	{
 		const FGaussianSplatData& Splat = InSplats[i];
+		const int32 BaseIdx = i * TotalCoeffs * 3;
 
-		for (int32 c = 0; c < NumCoeffs; c++)
+		// Store DC coefficient first (index 0)
+		HalfPtr[BaseIdx + 0] = FFloat16(Splat.SH_DC.X);
+		HalfPtr[BaseIdx + 1] = FFloat16(Splat.SH_DC.Y);
+		HalfPtr[BaseIdx + 2] = FFloat16(Splat.SH_DC.Z);
+
+		// Store higher-order coefficients (indices 1..NumHigherCoeffs)
+		for (int32 c = 0; c < NumHigherCoeffs; c++)
 		{
-			int32 Idx = i * NumCoeffs * 3 + c * 3;
+			int32 Idx = BaseIdx + (c + 1) * 3;  // +1 to skip DC
 			HalfPtr[Idx + 0] = FFloat16(Splat.SH[c].X);
 			HalfPtr[Idx + 1] = FFloat16(Splat.SH[c].Y);
 			HalfPtr[Idx + 2] = FFloat16(Splat.SH[c].Z);

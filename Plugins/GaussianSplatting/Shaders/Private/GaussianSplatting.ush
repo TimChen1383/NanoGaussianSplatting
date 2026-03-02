@@ -140,19 +140,31 @@ float4 LoadColor(Texture2D colorTex, SamplerState colorSampler, uint splatIndex,
 	return colorTex.SampleLevel(colorSampler, uv, 0);
 }
 
-// Load SH coefficients from buffer
-void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int numCoeffs, out float3 sh[15])
+// Load SH coefficients from buffer (includes DC at index 0)
+// numTotalCoeffs: total coefficients including DC (e.g., 16 for full band3)
+// Returns: shDC (DC coefficient), sh[15] (higher-order coefficients)
+void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int numTotalCoeffs, out float3 shDC, out float3 sh[15])
 {
-	// Assuming Float16 format: 3 channels * numCoeffs * 2 bytes
-	uint bytesPerSplat = numCoeffs * 3 * 2;
+	// Format: Float16, 3 channels * numTotalCoeffs * 2 bytes
+	uint bytesPerSplat = numTotalCoeffs * 3 * 2;
 	uint baseOffset = splatIndex * bytesPerSplat;
 
+	// Load DC coefficient first (index 0)
+	{
+		uint2 data = shBuffer.Load2(baseOffset);
+		shDC.x = f16tof32(data.x & 0xFFFF);
+		shDC.y = f16tof32(data.x >> 16);
+		shDC.z = f16tof32(data.y & 0xFFFF);
+	}
+
+	// Load higher-order coefficients (indices 1..numTotalCoeffs-1)
+	int numHigherCoeffs = numTotalCoeffs - 1;  // Exclude DC
 	[unroll]
 	for (int i = 0; i < 15; i++)
 	{
-		if (i < numCoeffs)
+		if (i < numHigherCoeffs)
 		{
-			uint o = baseOffset + i * 6; // 3 half floats = 6 bytes
+			uint o = baseOffset + (i + 1) * 6; // +1 to skip DC, 3 half floats = 6 bytes
 			uint2 data = shBuffer.Load2(o);
 			sh[i].x = f16tof32(data.x & 0xFFFF);
 			sh[i].y = f16tof32(data.x >> 16);

@@ -302,6 +302,9 @@ public:
 	/** Get position format as uint for shader */
 	uint32 GetPositionFormatUint() const { return static_cast<uint32>(PositionFormat); }
 
+	/** Get number of SH bands stored in SHBuffer (0 = no SH data) */
+	int32 GetSHBands() const { return SHBands; }
+
 private:
 	/** Create static buffers from asset data */
 	void CreateStaticBuffers(FRHICommandListBase& RHICmdList);
@@ -342,6 +345,7 @@ private:
 	TArray<uint32> CachedLODSplatClusterIndices;
 
 	int32 SplatCount = 0;
+	int32 SHBands = 0;  // Number of SH bands stored in SHBuffer (0 = no SH data)
 	bool bInitialized = false;
 
 public:

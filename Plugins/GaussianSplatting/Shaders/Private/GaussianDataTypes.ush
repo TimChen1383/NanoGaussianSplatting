@@ -6,7 +6,8 @@
 #define SPLATS_PER_CHUNK 256
 #define COLOR_TEXTURE_WIDTH 2048
 #define MORTON_TILE_SIZE 16
-#define NUM_SH_COEFFICIENTS 15
+#define NUM_SH_HIGHER_COEFFICIENTS 15  // Higher-order coefficients (bands 1-3)
+#define NUM_SH_TOTAL_COEFFICIENTS 16   // Including DC (band 0)
 #define SH_C0 0.28209479177387814f
 
 // Per-frame view data structure (must match C++ FGaussianSplatViewData)

@@ -114,6 +114,15 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	// Legacy: chunk data still needed for shader binding (dummy)
 	CachedChunkData = Asset->ChunkData;
 
+	// Load SH data for view-dependent rendering (f_rest coefficients)
+	if (Asset->SHBands > 0)
+	{
+		Asset->GetSHData(CachedSHData);
+		SHBands = Asset->SHBands;
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %lld bytes of SH data (bands=%d)"),
+			CachedSHData.Num(), SHBands);
+	}
+
 	// Set Nanite enabled flag from asset
 	bEnableNanite = Asset->IsNaniteEnabled();
 
@@ -339,8 +348,41 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 				.SetType(FRHIViewDesc::EBufferType::Raw));
 	}
 
-	// Legacy: PositionBuffer, OtherDataBuffer, SHBuffer no longer created
-	// (data is packed into PackedSplatBuffer above)
+	// SH buffer for view-dependent rendering (f_rest coefficients)
+	// Always create at least a dummy buffer for shader binding
+	{
+		uint32 SHDataSize = CachedSHData.Num();
+		if (SHDataSize == 0)
+		{
+			SHDataSize = 16;  // Create small dummy buffer
+		}
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSHBuffer"),
+			SHDataSize,
+			0,
+			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		SHBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(SHBuffer, 0, SHDataSize, RLM_WriteOnly);
+		if (CachedSHData.Num() > 0)
+		{
+			FMemory::Memcpy(Data, CachedSHData.GetData(), CachedSHData.Num());
+		}
+		else
+		{
+			FMemory::Memzero(Data, SHDataSize);  // Zero-initialize dummy
+		}
+		RHICmdList.UnlockBuffer(SHBuffer);
+
+		SHBufferSRV = RHICmdList.CreateShaderResourceView(
+			SHBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Raw));
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created SH buffer (%u bytes, bands=%d)"),
+			SHDataSize, SHBands);
+	}
 
 	// Chunk buffer - Always create at least a dummy buffer for shader binding
 	{
