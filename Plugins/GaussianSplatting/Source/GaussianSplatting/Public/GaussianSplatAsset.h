@@ -195,9 +195,25 @@ public:
 	/**
 	 * Thumbnail image generated at import time.
 	 * Stored persistently in the asset package so the Content Browser can display it.
+	 * NOTE: This is Transient - recreated from ThumbnailData in PostLoad()
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> ThumbnailTexture;
+
+	/**
+	 * Raw thumbnail pixel data (BGRA, 256x256).
+	 * Stored persistently and used to recreate ThumbnailTexture on load.
 	 */
 	UPROPERTY()
-	TObjectPtr<UTexture2D> ThumbnailTexture;
+	TArray<uint8> ThumbnailData;
+
+	/** Size of the thumbnail (width = height) */
+	UPROPERTY()
+	int32 ThumbnailSize = 0;
+
+private:
+	/** Recreate ThumbnailTexture from stored ThumbnailData (called in PostLoad) */
+	void CreateThumbnailTextureFromData();
 #endif
 
 public:

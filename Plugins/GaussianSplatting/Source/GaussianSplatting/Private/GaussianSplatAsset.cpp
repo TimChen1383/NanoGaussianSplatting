@@ -71,6 +71,15 @@ void UGaussianSplatAsset::PostLoad()
 	{
 		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatAsset::PostLoad - No ColorTextureBulkData to restore (might be old asset format)"));
 	}
+
+#if WITH_EDITORONLY_DATA
+	// Recreate the ThumbnailTexture from stored pixel data
+	if (ThumbnailData.Num() > 0 && ThumbnailSize > 0)
+	{
+		CreateThumbnailTextureFromData();
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset::PostLoad - ThumbnailTexture recreated successfully"));
+	}
+#endif
 }
 
 #if WITH_EDITOR
@@ -708,15 +717,15 @@ void UGaussianSplatAsset::GenerateThumbnail(const TArray<FGaussianSplatData>& In
 {
 	if (InSplats.IsEmpty()) return;
 
-	const int32 ThumbSize = 256;
+	ThumbnailSize = 256;
 
 	// Initialize pixel buffer with a dark background
 	TArray<FColor> Pixels;
-	Pixels.Init(FColor(30, 30, 30, 255), ThumbSize * ThumbSize);
+	Pixels.Init(FColor(30, 30, 30, 255), ThumbnailSize * ThumbnailSize);
 
 	// Depth buffer: keep the front-most (min depth) splat per pixel
 	TArray<float> DepthBuffer;
-	DepthBuffer.Init(TNumericLimits<float>::Max(), ThumbSize * ThumbSize);
+	DepthBuffer.Init(TNumericLimits<float>::Max(), ThumbnailSize * ThumbnailSize);
 
 	// ------------------------------------------------------------------
 	// Fixed camera: 45° yaw, -25° pitch, orthographic projection
@@ -763,9 +772,9 @@ void UGaussianSplatAsset::GenerateThumbnail(const TArray<FGaussianSplatData>& In
 		const float NormU = (U / MaxExtent + 1.f) * 0.5f;
 		const float NormV = (1.f - (V / MaxExtent + 1.f) * 0.5f); // flip Y
 
-		const int32 PX = FMath::Clamp((int32)(NormU * ThumbSize), 0, ThumbSize - 1);
-		const int32 PY = FMath::Clamp((int32)(NormV * ThumbSize), 0, ThumbSize - 1);
-		const int32 PixIdx = PY * ThumbSize + PX;
+		const int32 PX = FMath::Clamp((int32)(NormU * ThumbnailSize), 0, ThumbnailSize - 1);
+		const int32 PY = FMath::Clamp((int32)(NormV * ThumbnailSize), 0, ThumbnailSize - 1);
+		const int32 PixIdx = PY * ThumbnailSize + PX;
 
 		if (Depth < DepthBuffer[PixIdx])
 		{
@@ -784,14 +793,39 @@ void UGaussianSplatAsset::GenerateThumbnail(const TArray<FGaussianSplatData>& In
 	}
 
 	// ------------------------------------------------------------------
-	// Build a persistent UTexture2D stored inside this asset's package
+	// Store pixel data persistently (will be serialized with the asset)
 	// ------------------------------------------------------------------
-	ThumbnailTexture = NewObject<UTexture2D>(this, TEXT("ThumbnailTexture"),
-		RF_Public | RF_Transactional);
+	const int32 NumBytes = ThumbnailSize * ThumbnailSize * 4;
+	ThumbnailData.SetNum(NumBytes);
+
+	// FColor is RGBA; we store as BGRA for PF_B8G8R8A8 format
+	for (int32 Idx = 0; Idx < ThumbnailSize * ThumbnailSize; ++Idx)
+	{
+		ThumbnailData[Idx * 4 + 0] = Pixels[Idx].B;
+		ThumbnailData[Idx * 4 + 1] = Pixels[Idx].G;
+		ThumbnailData[Idx * 4 + 2] = Pixels[Idx].R;
+		ThumbnailData[Idx * 4 + 3] = Pixels[Idx].A;
+	}
+
+	// Create the texture from the stored data
+	CreateThumbnailTextureFromData();
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Thumbnail generated (%dx%d)"), ThumbnailSize, ThumbnailSize);
+}
+
+void UGaussianSplatAsset::CreateThumbnailTextureFromData()
+{
+	if (ThumbnailData.Num() == 0 || ThumbnailSize <= 0)
+	{
+		return;
+	}
+
+	// Create a transient texture (not saved, recreated on load)
+	ThumbnailTexture = NewObject<UTexture2D>(this, NAME_None, RF_Transient);
 
 	FTexturePlatformData* PlatformData = new FTexturePlatformData();
-	PlatformData->SizeX       = ThumbSize;
-	PlatformData->SizeY       = ThumbSize;
+	PlatformData->SizeX       = ThumbnailSize;
+	PlatformData->SizeY       = ThumbnailSize;
 	PlatformData->PixelFormat = PF_B8G8R8A8;
 	ThumbnailTexture->SetPlatformData(PlatformData);
 
@@ -803,24 +837,15 @@ void UGaussianSplatAsset::GenerateThumbnail(const TArray<FGaussianSplatData>& In
 
 	FTexture2DMipMap* Mip = new FTexture2DMipMap();
 	PlatformData->Mips.Add(Mip);
-	Mip->SizeX = ThumbSize;
-	Mip->SizeY = ThumbSize;
+	Mip->SizeX = ThumbnailSize;
+	Mip->SizeY = ThumbnailSize;
 
+	// Copy the stored pixel data to the mip
 	Mip->BulkData.Lock(LOCK_READ_WRITE);
-	uint8* MipData = reinterpret_cast<uint8*>(Mip->BulkData.Realloc(ThumbSize * ThumbSize * 4));
-
-	// FColor is RGBA; PF_B8G8R8A8 on disk is BGRA
-	for (int32 Idx = 0; Idx < ThumbSize * ThumbSize; ++Idx)
-	{
-		MipData[Idx * 4 + 0] = Pixels[Idx].B;
-		MipData[Idx * 4 + 1] = Pixels[Idx].G;
-		MipData[Idx * 4 + 2] = Pixels[Idx].R;
-		MipData[Idx * 4 + 3] = Pixels[Idx].A;
-	}
-
+	uint8* MipData = reinterpret_cast<uint8*>(Mip->BulkData.Realloc(ThumbnailData.Num()));
+	FMemory::Memcpy(MipData, ThumbnailData.GetData(), ThumbnailData.Num());
 	Mip->BulkData.Unlock();
-	ThumbnailTexture->UpdateResource();
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Thumbnail generated (%dx%d)"), ThumbSize, ThumbSize);
+	ThumbnailTexture->UpdateResource();
 }
 #endif
