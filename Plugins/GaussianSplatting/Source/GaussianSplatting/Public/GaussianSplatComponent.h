@@ -77,6 +77,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance")
 	bool bEnableFrustumCulling = true;
 
+	/** Screen-space error threshold in pixels for LOD selection.
+	 *  Lower values = more conservative (keep detail longer, less LOD savings)
+	 *  Higher values = more aggressive (switch to LOD sooner, better performance)
+	 *  Adjust per-asset based on point density - low density assets need lower values. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance", meta = (ClampMin = "0.1", ClampMax = "256.0"))
+	float LODErrorThreshold = 32.0f;
+
 protected:
 	/** Called when the asset changes */
 	void OnAssetChanged();

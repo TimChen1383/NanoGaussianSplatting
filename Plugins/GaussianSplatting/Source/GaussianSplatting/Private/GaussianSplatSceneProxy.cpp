@@ -1146,6 +1146,7 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, SHOrder(InComponent->SHOrder)
 	, OpacityScale(InComponent->OpacityScale)
 	, SplatScale(InComponent->SplatScale)
+	, LODErrorThreshold(InComponent->LODErrorThreshold)
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
 {
 	bWillEverBeLit = false;

@@ -32,16 +32,6 @@ TAutoConsoleVariable<int32> CVarShowClusterBounds(
 	TEXT(" 1: Show cluster colors (each cluster gets a unique random color)"),
 	ECVF_RenderThreadSafe);
 
-/** LOD error threshold in pixels - controls when LOD kicks in */
-TAutoConsoleVariable<float> CVarLODErrorThreshold(
-	TEXT("gs.LODErrorThreshold"),
-	32.0f,
-	TEXT("Screen-space error threshold in pixels for LOD selection.\n")
-	TEXT("Lower values = more conservative (keep detail longer, less LOD savings)\n")
-	TEXT("Higher values = more aggressive (switch to LOD sooner, more savings)\n")
-	TEXT("Default: 32.0"),
-	ECVF_RenderThreadSafe);
-
 /** Maximum number of splats the global accumulator will allocate working buffers for.
  *  Caps VRAM usage for ViewData/sort/histogram buffers. If total visible splats exceed
  *  this budget (after Nanite LOD compaction), excess splats are simply not rendered.
@@ -233,7 +223,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 		// Check camera-static skip: if nothing has changed, skip Phase 1+2 and reuse cached sort
 		FMatrix CurrentVP = SceneView->ViewMatrices.GetViewProjectionMatrix();
-		float CurrentErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
 		int32 CurrentDebugMode = DebugMode;
 		int32 CurrentDebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();
 
@@ -246,12 +235,13 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 			for (const FProxyRenderInfo& Info : VisibleProxies)
 			{
 				FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+				float ProxyErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
 				if (!GPUResources->bHasCachedSortData ||
 					!GPUResources->CachedViewProjectionMatrix.Equals(CurrentVP, 0.0f) ||
 					!GPUResources->CachedLocalToWorld.Equals(Info.LocalToWorld, 0.0f) ||
 					GPUResources->CachedOpacityScale != Info.Proxy->GetOpacityScale() ||
 					GPUResources->CachedSplatScale != Info.Proxy->GetSplatScale() ||
-					GPUResources->CachedErrorThreshold != CurrentErrorThreshold ||
+					GPUResources->CachedErrorThreshold != ProxyErrorThreshold ||
 					GPUResources->CachedDebugMode != CurrentDebugMode ||
 					GPUResources->CachedDebugForceLODLevel != CurrentDebugForceLODLevel)
 				{
@@ -286,7 +276,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 			PassParameters,
 			ERDGPassFlags::Raster,
 			[SceneView, VisibleProxies, TotalSplatCount, bCanSkip, bAllNanite, RawAccumulator,
-			 SharedIndexBuffer, CurrentVP, CurrentErrorThreshold, CurrentDebugMode,
+			 SharedIndexBuffer, CurrentVP, CurrentDebugMode,
 			 CurrentDebugForceLODLevel, DebugMode, MaxRenderBudget](FRHICommandListImmediate& RHICmdList)
 			{
 				if (!SceneView) return;
@@ -382,7 +372,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							// Cluster culling → fills ClusterVisibilityBitmap
 							FGaussianSplatRenderer::DispatchClusterCulling(
 								RHICmdList, *SceneView, GPUResources,
-								Info.LocalToWorld, Info.bUseLODRendering);
+								Info.LocalToWorld, Info.Proxy->GetLODErrorThreshold(), Info.bUseLODRendering);
 
 							// Compact → fills CompactedSplatIndices + VisibleSplatCountBuffer
 							FGaussianSplatRenderer::DispatchCompactSplats(
@@ -455,7 +445,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
 							GPUResources->CachedSplatScale = Info.Proxy->GetSplatScale();
 
-							GPUResources->CachedErrorThreshold = CurrentErrorThreshold;
+							GPUResources->CachedErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
 							GPUResources->CachedDebugMode = CurrentDebugMode;
 							GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
 							GPUResources->bHasCachedSortData = true;
@@ -503,7 +493,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							{
 								FGaussianSplatRenderer::DispatchClusterCulling(
 									RHICmdList, *SceneView, GPUResources,
-									Info.LocalToWorld, Info.bUseLODRendering);
+									Info.LocalToWorld, Info.Proxy->GetLODErrorThreshold(), Info.bUseLODRendering);
 							}
 
 							// CalcViewData → writes to GlobalViewDataBuffer at GlobalBaseOffset
@@ -539,7 +529,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							GPUResources->CachedOpacityScale = Info.Proxy->GetOpacityScale();
 							GPUResources->CachedSplatScale = Info.Proxy->GetSplatScale();
 
-							GPUResources->CachedErrorThreshold = CurrentErrorThreshold;
+							GPUResources->CachedErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
 							GPUResources->CachedDebugMode = CurrentDebugMode;
 							GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
 							GPUResources->bHasCachedSortData = true;

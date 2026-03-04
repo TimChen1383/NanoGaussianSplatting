@@ -79,6 +79,7 @@ public:
 	/**
 	 * Dispatch cluster culling compute shader (Nanite-style optimization)
 	 * Tests cluster bounding spheres against view frustum
+	 * @param ErrorThreshold Screen-space error threshold in pixels for LOD selection
 	 * @param bUseLODRendering If true, track unique LOD clusters for later rendering
 	 * @return Number of visible clusters (for statistics)
 	 */
@@ -87,6 +88,7 @@ public:
 		const FSceneView& View,
 		FGaussianSplatGPUResources* GPUResources,
 		const FMatrix& LocalToWorld,
+		float ErrorThreshold,
 		bool bUseLODRendering = false
 	);
 

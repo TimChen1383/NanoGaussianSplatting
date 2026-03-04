@@ -20,7 +20,6 @@
 
 // Console variables (declared in GaussianSplatting.cpp)
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
-extern TAutoConsoleVariable<float> CVarLODErrorThreshold;
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 
 FGaussianSplatRenderer::FGaussianSplatRenderer()
@@ -1633,6 +1632,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	const FSceneView& View,
 	FGaussianSplatGPUResources* GPUResources,
 	const FMatrix& LocalToWorld,
+	float ErrorThreshold,
 	bool bUseLODRendering)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatClusterCulling);
@@ -1739,7 +1739,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 		FIntRect ViewRect = ViewInfo.ViewRect;
 		CullingParams.ScreenHeight = static_cast<float>(ViewRect.Height());
-		CullingParams.ErrorThreshold = FMath::Max(0.1f, CVarLODErrorThreshold.GetValueOnRenderThread());
+		CullingParams.ErrorThreshold = FMath::Max(0.1f, ErrorThreshold);
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
 		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
 		// Debug: Force specific LOD level (-1 = auto, 0 = leaf, 1+ = specific level)

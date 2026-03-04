@@ -1,102 +1,26 @@
 
 [To Do list]
-
-
-
-***再對比一次Nanite, spark, supersplat的設計
-***測試多種PLY，兼容性問題 > 沒有SH資料就補0，mapping才不會錯
-***整理筆記
-***Code review > not architecture related
-***Demo - 野柳+小馬
 ***先做一個tile切割器，再開nanite跟level streaming就好,地形肯定要切成多塊單元，不管是asset還是地形邏輯其實都一樣
+***整理筆記
+***Demo - 野柳+小馬
 ***條列有開放出來的重要API > list what feature exposed to blueprint
-***promote screen space error to variable (currently in console command)
-***Crash if render for a long time??? Multiple crash reasons
+**important variable to details panel
+***lower VRAM usage > compare to sparkjs and unity's design
 **************************************************************************************************
-*import的時候要先判斷他是哪一種band的 > 接受 0-3 bands
-
-
-
-Okay no band, 1 band and 3 bands looks correct.
-However 2 bands looks quite red.
-Previously we have the issue when we load the SH data to GPU.
-
-When working with GPU buffers containing packed data smaller than 4 bytes (like Float16), we need to ensure we read offsets are 4-byte aligned.
-
-Maybe cause by this issue again?
-
-
-
-***********************************************
-這些debug feature可以拿掉了
-
-gs.UseSHRendering
-gs.SHDebugMode
-
-
-**********************************************************************************************
-
-
-
--------------------------------
-
-
-This is the Unreal Engine plugin I created which can import and render gaussian splatting PLY file inside Unreal Engine "D:\GitHub\UEGaussianSplatting\Plugins\GaussianSplatting".
-
-Currently the render of the color is a bit weird.
-As I know, the f_dc data stored inside PLY file is for calculating the base color of the Sphere Harmonics.
-f_rest data stored inside PLY file is for calculating highlight, reflection...of the Sphere Harmonics based on view angle.
-
-We created a console command "gs.UseSHRendering" to debug the render of the color.
-"gs.UseSHRendering 0" suppose to render base color only and it looks correct.
-"gs.UseSHRendering 1" suppose to render all the data and it looks weird.
-It will has weird color based on different angle.
-Looks a bit green when camera is above the asset.
-Looks a bit red when camera is below the asset.
-
-However for testing, the asset I imported does not have any f_rest data "D:\GitHub\UEGaussianSplatting\cactus_noBand.ply".
-What is "gs.UseSHRendering 1" actually doing? 
-What is it doing when there is no f_rest data?
-I am investigating why it cause green and red color based on view angle. 
 
 
 
 
-Okay these are the tested result.
-"gs.SHDebugMode 3" is not black.
-"gs.SHDebugMode 4" is similar to original but much higher contrast.
-"gs.UseSHRendering 0" is the result I turned off SH Rendering.
-
-I think you are right. The band data got messed up.
-But based on your assumption, if I import the asset with 3 Bands then it will render correctly right?
-Actually the asset with 3 Bands still has some green and red color on it.
+[切割器]
+	- 目前看起來直接寫custom tool最容易
+	- 
 
 
-1.missing some channel
-2.flipping the axis
-3.Wrong SH Basis Evaluation
-4.Wrong coordinate system for view direction > Force view direction constant(should already be done)
-5.wrong view direction > based on camera view
-6.SH Basis Functions Implemented Incorrectly
-7.f_rest order wrong
-8.Render only degree 1 terms
-When debbuging direction don't blend color 
-Maybe just render f_rest only for debugging?
-
-----------------------------------------------------------------------------------------------
-
-[SH function not working]
-	- only f_dc is working
-	- f_rest is not working
 
 
-[Smaller VRAM]
-	- VRAM看能不能再壓縮，目前100隻Llama VRAM會到11GB
-	- sparkjs example
-	- Unity plugin
-	- unity article "https://aras-p.info/blog/2023/09/13/Making-Gaussian-Splats-smaller/"
-	- run memory insight
-	
+
+
+
 
 -----------------------------------------------------------------------------------------
 [Cluster的結構長這樣]

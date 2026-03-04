@@ -401,6 +401,7 @@ public:
 	int32 GetSHOrder() const { return SHOrder; }
 	float GetOpacityScale() const { return OpacityScale; }
 	float GetSplatScale() const { return SplatScale; }
+	float GetLODErrorThreshold() const { return LODErrorThreshold; }
 
 	/** Check if this proxy is safe to use for rendering.
 	 *  Returns false if proxy is being destroyed or has invalid resources.
@@ -442,6 +443,7 @@ private:
 	int32 SHOrder = 3;
 	float OpacityScale = 1.0f;
 	float SplatScale = 1.0f;
+	float LODErrorThreshold = 32.0f;
 	bool bEnableFrustumCulling = true;
 
 #if WITH_EDITOR
