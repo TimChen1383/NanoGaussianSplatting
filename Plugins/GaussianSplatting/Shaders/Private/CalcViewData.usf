@@ -30,6 +30,7 @@ float4x4 LocalToWorld;
 float4x4 WorldToPLY;   // Transforms world direction to PLY/SH space for SH evaluation
 float4x4 WorldToClip;
 float4x4 WorldToView;
+float3 PreViewTranslation;  // For translating world position (velocity calculation)
 float3 CameraPosition;
 float2 ScreenSize;
 float2 FocalLength;
@@ -68,6 +69,8 @@ void WriteInvalidSplat(uint outputIndex, uint clusterID, uint lodLevel)
 {
 	FGaussianSplatViewData viewData;
 	viewData.ClipPosition = float4(0, 0, 0, -1);
+	viewData.TranslatedWorldPos = float3(0, 0, 0);
+	viewData.TranslatedWorldPosPad = 0;
 	viewData.PackedColorRG = 0;
 	viewData.PackedColorBA = 0;
 	viewData.Axis1 = float2(0, 0);
@@ -92,6 +95,10 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// Transform to world space
 	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
 	float4 clipPos = mul(worldPos, WorldToClip);
+
+	// Store translated world position for velocity calculation in pixel shader
+	// TranslatedWorld = World + PreViewTranslation (matches UE convention)
+	float3 translatedWorldPos = worldPos.xyz + PreViewTranslation;
 
 	// Cull if behind camera
 	if (clipPos.w <= 0.0)
@@ -200,6 +207,8 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// Store view data
 	FGaussianSplatViewData viewData;
 	viewData.ClipPosition = clipPos;
+	viewData.TranslatedWorldPos = translatedWorldPos;
+	viewData.TranslatedWorldPosPad = 0;
 	viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
 	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
 	viewData.Axis1 = axis1;

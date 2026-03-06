@@ -11,16 +11,18 @@
 #define SH_C0 0.28209479177387814f
 
 // Per-frame view data structure (must match C++ FGaussianSplatViewData)
-// Total: 40 bytes per splat (with ClusterID and padding for 16-byte alignment)
+// Total: 64 bytes per splat (with TranslatedWorldPos for velocity, 16-byte aligned)
 struct FGaussianSplatViewData
 {
-	float4 ClipPosition;    // Clip space position (xyz, w)
-	uint PackedColorRG;     // Half-float packed R,G
-	uint PackedColorBA;     // Half-float packed B,A
-	float2 Axis1;           // 2D covariance principal axis 1
-	float2 Axis2;           // 2D covariance principal axis 2
-	uint ClusterID;         // Cluster ID for debug visualization
-	uint Padding;           // Padding for 16-byte alignment
+	float4 ClipPosition;       // Clip space position (xyz, w)
+	float3 TranslatedWorldPos; // Translated world position for velocity calculation
+	float TranslatedWorldPosPad; // Padding for alignment
+	uint PackedColorRG;        // Half-float packed R,G
+	uint PackedColorBA;        // Half-float packed B,A
+	float2 Axis1;              // 2D covariance principal axis 1
+	float2 Axis2;              // 2D covariance principal axis 2
+	uint ClusterID;            // Cluster ID for debug visualization
+	uint Padding;              // Padding for 16-byte alignment
 };
 
 // Chunk info for quantized data (must match C++ FGaussianChunkInfo)

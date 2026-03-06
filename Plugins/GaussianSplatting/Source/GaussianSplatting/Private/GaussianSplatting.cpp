@@ -125,6 +125,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 	FRDGTexture* ColorTexture = Parameters.ColorTexture;
 	FRDGTexture* DepthTexture = Parameters.DepthTexture;
+	FRDGTexture* VelocityTexture = Parameters.VelocityTexture;
 	if (!ColorTexture)
 	{
 		return;
@@ -135,13 +136,20 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 	FRenderTargetParameters* PassParameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, ColorLoadAction);
+	// Bind velocity texture for TAA/TSR motion vector output
+	if (VelocityTexture)
+	{
+		PassParameters->RenderTargets[1] = FRenderTargetBinding(VelocityTexture, ERenderTargetLoadAction::ELoad);
+	}
 	if (DepthTexture)
 	{
+		// Enable depth writes so TSR/TAA can properly detect disocclusion
+		// Splats will write their center depth for each rendered pixel
 		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(
 			DepthTexture,
 			ERenderTargetLoadAction::ELoad,
 			ERenderTargetLoadAction::ELoad,
-			FExclusiveDepthStencil::DepthRead_StencilRead
+			FExclusiveDepthStencil::DepthWrite_StencilRead
 		);
 	}
 
