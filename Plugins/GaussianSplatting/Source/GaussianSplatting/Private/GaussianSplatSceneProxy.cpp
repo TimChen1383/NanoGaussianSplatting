@@ -1281,8 +1281,6 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 // registers itself with the ViewExtension
 void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& RHICmdList)
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: CreateRenderThreadResources called! SplatCount=%d"), SplatCount);
-
 	if (CachedAsset && CachedAsset->IsValid())
 	{
 		GPUResources = new FGaussianSplatGPUResources();
@@ -1327,8 +1325,6 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 
 void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 {
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: DestroyRenderThreadResources called!"));
-
 	// CRITICAL: Mark as pending destruction FIRST, before any other operations.
 	// This prevents render commands that have already captured a pointer to this proxy
 	// from accessing our resources. The atomic flag is checked by IsValidForRendering().
