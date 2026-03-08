@@ -11,12 +11,10 @@
 #define SH_C0 0.28209479177387814f
 
 // Per-frame view data structure (must match C++ FGaussianSplatViewData)
-// Total: 64 bytes per splat (with TranslatedWorldPos for velocity, 16-byte aligned)
+// Total: 48 bytes per splat (16-byte aligned)
 struct FGaussianSplatViewData
 {
 	float4 ClipPosition;       // Clip space position (xyz, w)
-	float3 TranslatedWorldPos; // Translated world position for velocity calculation
-	float TranslatedWorldPosPad; // Padding for alignment
 	uint PackedColorRG;        // Half-float packed R,G
 	uint PackedColorBA;        // Half-float packed B,A
 	float2 Axis1;              // 2D covariance principal axis 1

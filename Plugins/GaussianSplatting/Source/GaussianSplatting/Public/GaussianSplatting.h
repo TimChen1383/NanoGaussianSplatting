@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "Containers/Ticker.h"
-#include "RendererInterface.h"
 #include "GaussianGlobalAccumulator.h"
 
 class FGaussianSplatViewExtension;
@@ -36,12 +35,6 @@ private:
 	/** Ticker delegate handle for periodic status checks */
 	FTSTicker::FDelegateHandle TickDelegateHandle;
 
-	/** Post opaque render delegate handle */
-	FDelegateHandle PostOpaqueRenderDelegateHandle;
-
 	/** Global GPU accumulator for one-draw-call path (render-thread owned) */
 	TUniquePtr<FGaussianGlobalAccumulator> GlobalAccumulator;
-
-	/** Render callback */
-	void OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters& Parameters);
 };

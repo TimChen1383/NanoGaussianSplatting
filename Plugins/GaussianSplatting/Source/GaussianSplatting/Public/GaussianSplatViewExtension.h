@@ -6,11 +6,14 @@
 #include "SceneViewExtension.h"
 
 class FGaussianSplatSceneProxy;
+struct FGaussianGlobalAccumulator;
+struct FPostProcessMaterialInputs;
+struct FScreenPassTexture;
 
 /**
  * Scene View Extension for Gaussian Splatting
  * Manages registration of Gaussian Splat scene proxies.
- * Actual rendering is handled by PostOpaqueRenderDelegate in FGaussianSplattingModule.
+ * Rendering hooks into the post-processing chain after TSR via SubscribeToPostProcessingPass.
  */
 class GAUSSIANSPLATTING_API FGaussianSplatViewExtension : public FSceneViewExtensionBase
 {
@@ -30,7 +33,7 @@ public:
 
 	virtual void PostRenderBasePassDeferred_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView, const FRenderTargetBindingSlots& RenderTargets, TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures) override;
 
-	virtual void PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessingInputs& Inputs) override;
+	virtual void SubscribeToPostProcessingPass(EPostProcessingPass Pass, const FSceneView& InView, FPostProcessingPassDelegateArray& InOutPassCallbacks, bool bIsPassEnabled) override;
 
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
 	//~ End ISceneViewExtension Interface
@@ -50,7 +53,12 @@ public:
 	/** Get proxy lock for thread-safe access */
 	FCriticalSection& GetProxyLock() const { return ProxyLock; }
 
+	/** Set the global accumulator pointer (called by module during startup) */
+	void SetGlobalAccumulator(FGaussianGlobalAccumulator* InGlobalAccumulator) { GlobalAccumulator = InGlobalAccumulator; }
+
 private:
+	/** Post-processing pass callback for rendering gaussian splats after TSR */
+	FScreenPassTexture PostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs);
 	/** Registered scene proxies */
 	TArray<FGaussianSplatSceneProxy*> RegisteredProxies;
 
@@ -59,4 +67,7 @@ private:
 
 	/** Singleton instance */
 	static FGaussianSplatViewExtension* Instance;
+
+	/** Global accumulator for one-draw-call path (owned by Module, not this class) */
+	FGaussianGlobalAccumulator* GlobalAccumulator = nullptr;
 };

@@ -41,7 +41,6 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(FMatrix44f, WorldToPLY)  // Transforms world direction to PLY/SH space for SH evaluation
 		SHADER_PARAMETER(FMatrix44f, WorldToClip)
 		SHADER_PARAMETER(FMatrix44f, WorldToView)
-		SHADER_PARAMETER(FVector3f, PreViewTranslation)  // For velocity calculation (TranslatedWorld = World + PreViewTranslation)
 		SHADER_PARAMETER(FVector3f, CameraPosition)
 		SHADER_PARAMETER(FVector2f, ScreenSize)
 		SHADER_PARAMETER(FVector2f, FocalLength)
@@ -203,16 +202,7 @@ class FGaussianSplatPS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatPS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		// Velocity calculation (Nanite-style): transform translated world position to previous clip space
-		SHADER_PARAMETER(FMatrix44f, PrevTranslatedWorldToClip)
-		// Screen size inverse for NDC conversion (avoids View uniform buffer dependency)
-		SHADER_PARAMETER(FVector2f, ScreenSizeInverse)
-		// TAA jitter: xy = current frame jitter, zw = previous frame jitter (in NDC space)
-		SHADER_PARAMETER(FVector4f, TemporalAAJitter)
-		// PreViewTranslation for converting TranslatedWorld back to World
-		SHADER_PARAMETER(FVector3f, PreViewTranslation)
-		// Previous frame's PreViewTranslation for correct velocity calculation
-		SHADER_PARAMETER(FVector3f, PrevPreViewTranslation)
+		// No parameters needed — pixel shader only uses interpolated vertex data
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

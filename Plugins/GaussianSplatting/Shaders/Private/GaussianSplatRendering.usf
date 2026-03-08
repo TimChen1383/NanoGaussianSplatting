@@ -1,5 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// Shader version: 4 (fixed TAA/TSR velocity: proper PreViewTranslation, TAA jitter removal, correct encoding)
+// Shader version: 5 (post-TSR rendering: velocity output removed, no longer engaging TSR)
 
 //RASTERIZATION, Vertex Shader + Pixel Shader
 
@@ -9,26 +9,6 @@
 #include "/Engine/Public/Platform.ush"
 #include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
 
-// Velocity encoding matching UE5's Common.ush EncodeVelocityToTexture
-// Velocity is in NDC space [-2, 2] range, encoded to [0, 1] for texture
-// Uses 0.499f to avoid using the full range so that (0,0) clear color is special
-float4 EncodeVelocityToTexture(float3 V)
-{
-	// Gamma encoding for better precision in low velocity ranges (matches VELOCITY_ENCODE_GAMMA)
-	V.xy = sign(V.xy) * sqrt(abs(V.xy)) * (2.0 / sqrt(2.0));
-
-	// 0.499f is a value smaller than 0.5f to avoid using the full range
-	// 0.5f to allow for a range of -2..2 instead of -1..1
-	float4 EncodedV;
-	EncodedV.xy = V.xy * (0.499f * 0.5f) + 32767.0f / 65535.0f;
-
-	// Depth velocity encoding (not used for TAA/TSR, but included for completeness)
-	EncodedV.z = V.z * (0.499f * 0.5f) + 32767.0f / 65535.0f;
-	EncodedV.w = 0.0f;  // No pixel animation flag
-
-	return EncodedV;
-}
-
 // Vertex shader parameters
 #if VERTEXSHADER
 StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
@@ -36,15 +16,6 @@ StructuredBuffer<uint> SortKeysBuffer;
 uint SplatCount;
 uint DebugMode;  // 0=off, 1=cluster colors (Nanite-style debug view)
 uint EnableNanite;  // 1=Nanite enabled, 0=disabled (non-Nanite assets hidden in debug mode)
-#endif
-
-// Pixel shader parameters for velocity calculation (Nanite-style)
-#if PIXELSHADER
-float4x4 PrevTranslatedWorldToClip;  // Previous frame's matrix for velocity
-float2 ScreenSizeInverse;            // 1.0 / ScreenSize for NDC conversion
-float4 TemporalAAJitter;             // xy = current jitter, zw = prev jitter (NDC space)
-float3 PreViewTranslation;           // Current frame's pre-view translation
-float3 PrevPreViewTranslation;       // Previous frame's pre-view translation
 #endif
 
 // Convert HSV to RGB (Nanite-style saturated colors)
@@ -95,14 +66,6 @@ struct FVertexOutput
 	float2 LocalPos : TEXCOORD0;
 	float4 Color : TEXCOORD1;
 	uint DebugFlag : TEXCOORD2;  // 0=normal, 1=debug mode (skip Gaussian)
-	float3 TranslatedWorldPos : TEXCOORD3;  // For velocity calculation in pixel shader
-};
-
-// Pixel shader output with velocity for TAA/TSR
-struct FPixelOutput
-{
-	float4 Color : SV_Target0;
-	float4 Velocity : SV_Target1;
 };
 
 // Vertex shader: generate quad from instance data
@@ -124,7 +87,6 @@ FVertexOutput MainVS(
 
 	// Default: normal rendering mode
 	Output.DebugFlag = 0;
-	Output.TranslatedWorldPos = viewData.TranslatedWorldPos;
 
 	// Check validity (w <= 0 means invalid/behind camera)
 	if (viewData.ClipPosition.w <= 0.0)
@@ -133,7 +95,6 @@ FVertexOutput MainVS(
 		Output.Position = float4(0, 0, 0, 1);
 		Output.LocalPos = float2(0, 0);
 		Output.Color = float4(0, 0, 0, 0);
-		Output.TranslatedWorldPos = float3(0, 0, 0);
 		return Output;
 	}
 
@@ -184,81 +145,35 @@ FVertexOutput MainVS(
 	return Output;
 }
 
-// Pixel shader: Gaussian falloff with alpha blending + velocity output (Nanite-style)
-FPixelOutput MainPS(FVertexOutput Input)
+// Pixel shader: Gaussian falloff with alpha blending (color only, no velocity)
+float4 MainPS(FVertexOutput Input) : SV_Target0
 {
-	FPixelOutput Output;
 	float4 color = Input.Color;
-
-	// Calculate velocity (Nanite-style) for TAA/TSR reprojection
-	//
-	// The key insight: TranslatedWorldPos was computed using the CURRENT frame's PreViewTranslation:
-	//   TranslatedWorldPos = WorldPos + PreViewTranslation
-	// But PrevTranslatedWorldToClip expects the PREVIOUS frame's translation:
-	//   PrevTranslatedWorldPos = WorldPos + PrevPreViewTranslation
-	// So we need to convert: PrevTranslatedWorldPos = TranslatedWorldPos + (PrevPreViewTranslation - PreViewTranslation)
-	float3 WorldPos = Input.TranslatedWorldPos - PreViewTranslation;
-	float3 PrevTranslatedWorldPos = WorldPos + PrevPreViewTranslation;
-
-	// Transform through previous frame's matrix to get previous clip position
-	float4 PrevClipPos = mul(float4(PrevTranslatedWorldPos, 1.0), PrevTranslatedWorldToClip);
-
-	// Compute current and previous NDC positions
-	// SV_Position is in pixel coordinates, convert to NDC [-1, 1]
-	float2 CurrentNDC = Input.Position.xy * ScreenSizeInverse * 2.0f - 1.0f;
-	CurrentNDC.y = -CurrentNDC.y;  // Flip Y (SV_Position.y increases downward, NDC.y increases upward)
-	float2 PrevNDC = PrevClipPos.xy / PrevClipPos.w;
-
-	// Remove TAA jitter from both positions to get stable velocity
-	// Without this, velocity would include sub-pixel jitter noise
-	CurrentNDC -= TemporalAAJitter.xy;
-	PrevNDC -= TemporalAAJitter.zw;
-
-	// Compute velocity in NDC space (current - previous position)
-	// Also compute depth velocity for completeness
-	float CurrentDeviceZ = Input.Position.z;
-	float PrevDeviceZ = PrevClipPos.z / PrevClipPos.w;
-	float3 Velocity = float3(CurrentNDC - PrevNDC, CurrentDeviceZ - PrevDeviceZ);
 
 	// Debug mode: solid opaque colors without Gaussian falloff (Nanite-style)
 	if (Input.DebugFlag != 0)
 	{
-		// Simple circle cutoff for cleaner debug visualization
 		float distSq = dot(Input.LocalPos, Input.LocalPos);
 		if (distSq > 1.0)
 		{
 			discard;
 		}
-		// Output solid color (no premultiplied alpha, no Gaussian)
-		Output.Color = color;
-		Output.Velocity = EncodeVelocityToTexture(Velocity);
-		return Output;
+		return color;
 	}
 
-	// Normal mode: Gaussian falloff matching Unity's implementation
-	// Unity uses exp(-dot(pos,pos)) where pos goes to ±2 at edges
-	// Our LocalPos goes to ±1 at edges, so we use exp(-4*distSq) to match
-	// At corner (1,1): distSq=2, exp(-8) ≈ 0.00034, matching Unity's exp(-8) at (2,2)
+	// Gaussian falloff matching Unity's implementation
 	float distSq = dot(Input.LocalPos, Input.LocalPos);
-
-	// Gaussian weight matching Unity's falloff
 	float gaussianWeight = exp(-4.0 * distSq);
-
-	// Apply Gaussian to alpha (saturate to match Unity's behavior)
 	color.a = saturate(gaussianWeight * color.a);
 
 	// Premultiplied alpha
 	color.rgb *= color.a;
 
-	// Discard nearly transparent pixels for efficiency
-	// Match Unity's threshold: 1/255 ≈ 0.00392
+	// Discard nearly transparent pixels
 	if (color.a < 1.0/255.0)
 	{
 		discard;
 	}
 
-	Output.Color = color;
-	// Output velocity for TAA/TSR (Nanite-style encoding)
-	Output.Velocity = EncodeVelocityToTexture(Velocity);
-	return Output;
+	return color;
 }
