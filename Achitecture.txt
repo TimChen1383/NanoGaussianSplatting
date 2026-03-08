@@ -1,26 +1,48 @@
 
 [To Do list]
-***先做一個tile切割器，再開nanite跟level streaming就好,地形肯定要切成多塊單元，不管是asset還是地形邏輯其實都一樣
 ***整理筆記
-***Demo - 野柳(FPV style)+小馬
+***Demo - 野柳(FPV style)+小馬+sky的ply
 ***條列有開放出來的重要API > list what feature exposed to blueprint
 **important variable to details panel
-***lower VRAM usage > compare to sparkjs and unity's design
-***換level VRAM還會在?
-***確定有做frustum culling, occlusion culling
 ***上架切割器
-***make sure we output depth pass properly and can be seen in view mode
-***加sky的ply
-***目前TSR會拖累渲染效能，GS其實也不需要TSR，看能不能上GS不參與TSR > 如果沒有很嚴重就算了
+
+
+
+***確定有做frustum culling, occlusion culling
+***performance再跟supersplat, sparkjs, unity嚴格比一次
+***換level VRAM還會在?
+***lower VRAM usage > compare to sparkjs and unity's design
+***小馬用32的error間距太大了
+***邊緣的cluster會插出去，有點明顯，輪廓很重要，中間糊糊的反而還好
+***performance debug tool
+***相機移動的時候sorting會被啟動，fps掉蠻多的，這可以改進?
 **************************************************************************************************
 
 
+Screen Space Error 會因為畫面大小而被擠壓 ? Nanite這樣嗎? 不應該這樣吧
+
+
+
+
+還是讓他參與TSR好了，這樣才有motion blur，反正也不會影響效能。太糊他再自己關掉AA就好
 
 
 
 
 
+This is the Unreal Engine plugin I created which can import and render gaussian splatting PLY file inside Unreal Engine "E:\UnrealProject\GSTile\UEGaussianSplatting\Plugins\GaussianSplatting".
 
+I have a question.
+I hook the gaussian splatting render after TSR which means my gaussian splatting should by bass TSR calculation.
+However when I ran Unreal Insight, I still saw TSR cost some times to render and took away around 10 fps.
+Does it means actually TSR is not really related to my gaussian splatting render?
+It's more like the default cost of Unreal Engine?
+Or actually my gaussian splatting render engage in the TSR calculation or not will affect performance?
+
+----------------------------------------------------------
+[Render Pipeline Hook locaiton]
+	- After TSR
+	- no depth of field, no motion blur
 
 -----------------------------------------------------------------------------------
 [Crash Report - didn't add new assets]
