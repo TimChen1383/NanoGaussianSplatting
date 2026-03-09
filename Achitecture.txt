@@ -31,7 +31,8 @@
 	- 70 llama in the level > cameara moving, Nanite enabled, 57 fps(disable AA 100fps)
 	***目前這個優化程度單純參考其實沒什麼意義了 > 必須搭配insight
 	- think again how Max Budget works
-	- 試著加HLOD的設計，應該蠻合理的 > 目前加了一次但反而更慢了 
+	- 試著加HLOD的設計，應該蠻合理的 > 目前加了一次但反而更慢了
+	- 單一個asset要怎麼做HLOD? 有合理嗎?
 
 
 
