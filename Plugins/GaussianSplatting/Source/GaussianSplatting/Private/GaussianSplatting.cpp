@@ -5,6 +5,7 @@
 #include "GaussianSplatRenderer.h"
 #include "GaussianSplatSceneProxy.h"
 #include "GaussianGlobalAccumulator.h"
+#include "GlobalSplatBufferManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #include "ShaderCore.h"
@@ -15,6 +16,10 @@
 #include "RenderGraphUtils.h"
 #include "SceneView.h"
 #include "ScreenPass.h"
+
+// Empty parameter struct for Copy passes (no render target binding slots)
+BEGIN_SHADER_PARAMETER_STRUCT(FCopyPassParameters, )
+END_SHADER_PARAMETER_STRUCT()
 
 #define LOCTEXT_NAMESPACE "FGaussianSplattingModule"
 
@@ -84,6 +89,9 @@ void FGaussianSplattingModule::StartupModule()
 
 	// Allocate the global accumulator (buffers are created lazily on first render)
 	GlobalAccumulator = MakeUnique<FGaussianGlobalAccumulator>();
+
+	// Allocate the global splat buffer manager (Stage 1: buffer concat + metadata)
+	GlobalSplatBufferManager = MakeUnique<FGlobalSplatBufferManager>();
 
 	// Register post-opaque render delegate for rendering
 	PostOpaqueRenderDelegateHandle = GetRendererModuleRef().RegisterPostOpaqueRenderDelegate(
@@ -269,6 +277,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		}
 
 		FGaussianGlobalAccumulator* RawAccumulator = GlobalAccumulator.Get();
+		FGlobalSplatBufferManager* RawSplatBufferManager = GlobalSplatBufferManager.Get();
 
 		// Read render budget for global accumulator buffer cap.
 		// Disable budget when forcing LOD level — the debug command needs to show
@@ -279,6 +288,23 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		{
 			MaxRenderBudget = 0;  // Unlimited — debug mode overrides budget
 		}
+
+	// Stage 1 pre-pass: CopyBufferRegion requires IsOutsideRenderPass() == true.
+	// SkipRenderPass runs on the graphics queue without starting a render pass.
+	{
+		FCopyPassParameters* RebuildParams = GraphBuilder.AllocParameters<FCopyPassParameters>();
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("GaussianSplatGlobalBufferRebuild"),
+			RebuildParams,
+			ERDGPassFlags::Copy | ERDGPassFlags::NeverCull,
+			[Proxies, RawSplatBufferManager](FRHICommandListImmediate& RHICmdList)
+			{
+				if (RawSplatBufferManager)
+				{
+					RawSplatBufferManager->UpdateIfNeeded(RHICmdList, Proxies);
+				}
+			});
+	}
 
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("GaussianSplatRendering_Global"),
@@ -600,6 +626,18 @@ void FGaussianSplattingModule::ShutdownModule()
 			{
 				RawAccumulator->Release();
 				delete RawAccumulator;
+			});
+	}
+
+	// Release global splat buffer manager GPU buffers from the render thread
+	if (GlobalSplatBufferManager.IsValid())
+	{
+		FGlobalSplatBufferManager* RawManager = GlobalSplatBufferManager.Release();
+		ENQUEUE_RENDER_COMMAND(ReleaseGlobalSplatBufferManager)(
+			[RawManager](FRHICommandListImmediate& RHICmdList)
+			{
+				RawManager->Release();
+				delete RawManager;
 			});
 	}
 

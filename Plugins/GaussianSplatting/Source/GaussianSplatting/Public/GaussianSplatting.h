@@ -9,6 +9,7 @@
 #include "GaussianGlobalAccumulator.h"
 
 class FGaussianSplatViewExtension;
+struct FGlobalSplatBufferManager;
 
 class FGaussianSplattingModule : public IModuleInterface
 {
@@ -41,6 +42,9 @@ private:
 
 	/** Global GPU accumulator for one-draw-call path (render-thread owned) */
 	TUniquePtr<FGaussianGlobalAccumulator> GlobalAccumulator;
+
+	/** Stage 1: Global static buffer manager — concatenates per-proxy data (render-thread owned) */
+	TUniquePtr<FGlobalSplatBufferManager> GlobalSplatBufferManager;
 
 	/** Render callback */
 	void OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters& Parameters);

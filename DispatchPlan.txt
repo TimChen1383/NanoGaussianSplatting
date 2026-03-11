@@ -1,0 +1,652 @@
+================================================================================
+SINGLE GLOBAL DISPATCH PLAN
+================================================================================
+
+Reduce per-proxy GPU dispatch overhead by batching all per-proxy passes into
+single global dispatches. Zero visual quality impact.
+
+================================================================================
+1. PROBLEM ANALYSIS
+================================================================================
+
+CURRENT PIPELINE (per-proxy loop, 98 proxies):
+
+    FOR EACH PROXY (98x):                         GPU Time    CPU Time
+        DispatchClusterCulling()                   1.3ms       4.3ms
+        DispatchCompactSplats()                    1.8ms       2.2ms
+        DispatchPrepareIndirectArgs()              534us       2.0ms
+        DispatchGatherVisibleCount()               459us       664us
+    ONCE:
+        DispatchPrefixSumVisibleCounts()           9.4us       -
+    FOR EACH PROXY (98x):
+        DispatchCalcViewDataCompactedGlobal()      3.6ms       816us
+    ONCE (already global):
+        DispatchCalcDistancesGlobalIndirect()      441us       17us
+        DispatchRadixSortGlobalIndirect()          2.0ms       97us
+        DrawSplatsGlobalIndirect()                 6.3ms       70us
+    -----------------------------------------------------------------
+    TOTAL GS:                                      16.4ms      10.1ms
+
+TOTAL DISPATCH COUNT: ~490 dispatches (98 proxies x 5 per-proxy passes)
+
+ROOT CAUSE:
+Each dispatch call has overhead on both CPU and GPU:
+- CPU: ~40-100us per dispatch for RHI parameter binding, UAV barriers, command
+  recording. With 490 dispatches this adds up to 8-10ms of pure CPU overhead.
+- GPU: Each dispatch has kernel launch latency (~5-15us) and pipeline stalls
+  from UAV barriers between dispatches. Small dispatches (e.g. PrepareIndirectArgs
+  with just 1 thread) waste an entire GPU wave.
+
+KEY INSIGHT: The later passes (CalcDistances, RadixSort, Draw) are ALREADY
+batched into single global dispatches via the GlobalAccumulator. The problem is
+that the EARLIER passes (ClusterCulling, CompactSplats, PrepareIndirectArgs,
+GatherVisibleCount, CalcViewData) still run per-proxy.
+
+================================================================================
+2. SOLUTION: BATCH ALL PER-PROXY PASSES INTO GLOBAL DISPATCHES
+================================================================================
+
+PROPOSED PIPELINE:
+
+    ONCE:
+        [GPU] GlobalClusterCulling          1 dispatch   (was 98)
+        [GPU] GlobalCompactSplats           1 dispatch   (was 98)
+        [GPU] GlobalGatherAndPrefixSum      1 dispatch   (was 98+1)
+        [GPU] GlobalCalcViewData            1 dispatch   (was 98)
+        [GPU] CalcDistancesGlobalIndirect   1 dispatch   (unchanged)
+        [GPU] RadixSortGlobalIndirect       16 dispatches (unchanged)
+        [GPU] DrawSplatsGlobalIndirect      1 dispatch   (unchanged)
+    -----------------------------------------------------------------
+    TOTAL DISPATCHES: ~21 (was ~490)
+
+PREREQUISITE: All per-proxy static GPU buffers must be concatenated into single
+global buffers, with a metadata buffer describing each proxy's offsets.
+
+================================================================================
+3. GLOBAL BUFFER ARCHITECTURE
+================================================================================
+
+--- 3.1 Global Static Buffers ---
+
+When proxies register with the renderer (or when the proxy set changes),
+concatenate their static buffers into global versions:
+
+    GlobalPackedSplatBuffer:
+        [Proxy0 splats | Proxy1 splats | ... | ProxyN splats]
+        Format: ByteAddressBuffer, 16 bytes/splat
+        Size: TotalSplatCount * 16 bytes
+
+    GlobalClusterBuffer:
+        [Proxy0 clusters | Proxy1 clusters | ... | ProxyN clusters]
+        Format: StructuredBuffer<FGaussianGPUCluster>, 80 bytes/cluster
+        Size: TotalClusterCount * 80 bytes
+
+    GlobalSplatClusterIndexBuffer:
+        [Proxy0 indices | Proxy1 indices | ... | ProxyN indices]
+        Format: StructuredBuffer<uint>, 4 bytes/index
+        Size: TotalSplatCount * 4 bytes
+        NOTE: Each proxy's cluster indices are LOCAL to that proxy's cluster
+              range. The shader adds ProxyMetadata.ClusterStartIndex.
+
+    GlobalSHBuffer (if SH rendering enabled):
+        [Proxy0 SH | Proxy1 SH | ... | ProxyN SH]
+        Format: ByteAddressBuffer, 96 bytes/splat (float16, up to 48 coeffs)
+        Size: TotalSplatCount * 96 bytes
+
+These buffers are rebuilt when proxies are added/removed from the scene. This
+is infrequent (level load, streaming) and the cost is a single GPU upload.
+
+--- 3.2 Global Dynamic Buffers (per-frame, already sized for worst case) ---
+
+    GlobalClusterVisibilityBitmap:
+        Size: ceil(TotalClusterCount / 32) * 4 bytes
+        Replaces per-proxy ClusterVisibilityBitmap
+
+    GlobalSelectedClusterBuffer:
+        Size: TotalLeafClusterCount * 4 bytes
+        Replaces per-proxy SelectedClusterBuffer
+
+    GlobalLODClusterSelectedBitmap:
+        Size: ceil(TotalClusterCount / 32) * 4 bytes
+        Replaces per-proxy LODClusterSelectedBitmap
+
+    GlobalCompactedSplatIndices:
+        Size: TotalSplatCount * 4 bytes (worst case)
+        Replaces per-proxy CompactedSplatIndicesBuffer
+
+    GlobalVisibleCountArray:
+        Size: ProxyCount * 4 bytes (one atomic counter per proxy)
+        Already exists in current GlobalAccumulator
+
+--- 3.3 Proxy Metadata Buffer ---
+
+New StructuredBuffer uploaded once per frame (or when proxy set changes):
+
+    struct FProxyGPUMetadata  // 128 bytes, aligned
+    {
+        // Transform
+        float4x4 LocalToWorld;              // 64 bytes
+
+        // Splat offsets into global buffers
+        uint GlobalSplatStartIndex;         // Offset into GlobalPackedSplatBuffer
+        uint TotalSplatCount;               // Original + LOD splats
+        uint OriginalSplatCount;            // Original splats only
+
+        // Cluster offsets into global buffers
+        uint GlobalClusterStartIndex;       // Offset into GlobalClusterBuffer
+        uint ClusterCount;                  // Total clusters for this proxy
+        uint LeafClusterCount;              // Leaf clusters only
+
+        // Bitmap offsets (in uint32 units)
+        uint GlobalVisibilityBitmapStart;   // Offset into GlobalClusterVisibilityBitmap
+        uint GlobalSelectedClusterStart;    // Offset into GlobalSelectedClusterBuffer
+        uint GlobalLODBitmapStart;          // Offset into GlobalLODClusterSelectedBitmap
+
+        // Compaction
+        uint GlobalSplatClusterIndexStart;  // Offset into GlobalSplatClusterIndexBuffer
+        uint CompactionCounterIndex;        // Index into GlobalVisibleCountArray
+        uint CompactionOutputStart;         // Worst-case offset into GlobalCompactedSplatIndices
+
+        // SH
+        uint GlobalSHStartIndex;            // Offset into GlobalSHBuffer
+
+        // Cumulative totals (for binary search)
+        uint GlobalLeafClusterEnd;          // sum of LeafClusterCounts[0..this proxy]
+        uint GlobalSplatEnd;                // sum of TotalSplatCounts[0..this proxy]
+
+        // Padding to 128 bytes
+        uint Pad[1];
+    };
+
+    Buffer: StructuredBuffer<FProxyGPUMetadata> ProxyMetadataBuffer
+    Size: ProxyCount * 128 bytes (tiny - 98 proxies = 12.5 KB)
+
+--- 3.4 Proxy Lookup Strategy ---
+
+Each batched shader needs to know which proxy a given thread belongs to.
+
+Use BINARY SEARCH on cumulative totals stored in ProxyMetadataBuffer:
+
+    uint FindProxyIndex(uint globalIdx, uint proxyCount, bool bUseSplatEnd)
+    {
+        uint lo = 0, hi = proxyCount;
+        while (lo < hi)
+        {
+            uint mid = (lo + hi) / 2;
+            uint end = bUseSplatEnd
+                ? ProxyMetadataBuffer[mid].GlobalSplatEnd
+                : ProxyMetadataBuffer[mid].GlobalLeafClusterEnd;
+            if (end <= globalIdx)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return lo;
+    }
+
+Cost: O(log ProxyCount) = ~7 iterations for 98 proxies, reading from a 12.5 KB
+buffer that fits entirely in L1 cache. Negligible compared to per-thread work.
+
+================================================================================
+4. SHADER MODIFICATIONS
+================================================================================
+
+--- 4.1 GlobalClusterCulling.usf ---
+
+Replaces: per-proxy ClusterCulling.usf dispatches
+
+    Dispatch: (ceil(TotalLeafClusterCount / 64), 1, 1)
+
+    New parameters:
+        StructuredBuffer<FProxyGPUMetadata> ProxyMetadataBuffer
+        uint ProxyCount
+        uint TotalLeafClusterCount
+        StructuredBuffer<FGaussianGPUCluster> GlobalClusterBuffer
+        RWStructuredBuffer<uint> GlobalClusterVisibilityBitmap
+        RWStructuredBuffer<uint> GlobalSelectedClusterBuffer
+        RWStructuredBuffer<uint> GlobalLODClusterSelectedBitmap
+
+    Algorithm per thread:
+        globalLeafIdx = SV_DispatchThreadID.x
+        if (globalLeafIdx >= TotalLeafClusterCount) return
+
+        // Find which proxy this leaf cluster belongs to
+        proxyIdx = FindProxyIndex(globalLeafIdx, ProxyCount, false)
+        metadata = ProxyMetadataBuffer[proxyIdx]
+
+        // Convert to local cluster index
+        globalLeafStart = (proxyIdx == 0) ? 0 :
+            ProxyMetadataBuffer[proxyIdx-1].GlobalLeafClusterEnd
+        localLeafIdx = globalLeafIdx - globalLeafStart
+
+        // Load cluster from global buffer
+        cluster = GlobalClusterBuffer[metadata.GlobalClusterStartIndex + localLeafIdx]
+
+        // Frustum cull using per-proxy LocalToWorld from metadata
+        worldCenter = mul(metadata.LocalToWorld, float4(cluster.BoundingSphere.xyz, 1))
+        // ... same frustum + LOD walk logic as current ClusterCulling.usf ...
+
+        // LOD walk: parent indices are LOCAL to proxy's cluster range
+        // Access as: GlobalClusterBuffer[metadata.GlobalClusterStartIndex + parentIdx]
+
+        // Write to global bitmaps at proxy's offset
+        bitmapIdx = metadata.GlobalVisibilityBitmapStart + (localLeafIdx / 32)
+        bitMask = 1u << (localLeafIdx % 32)
+        InterlockedOr(GlobalClusterVisibilityBitmap[bitmapIdx], bitMask)
+
+        // Write selected cluster (LOCAL index, same as before)
+        GlobalSelectedClusterBuffer[metadata.GlobalSelectedClusterStart + localLeafIdx]
+            = selectedLocalClusterIdx
+
+    A separate ResetCS clears the global bitmaps before culling.
+    Dispatch: (ceil(max(VisibilityBitmapSize, LODBitmapSize) / 64), 1, 1)
+
+--- 4.2 GlobalCompactSplats.usf ---
+
+Replaces: per-proxy CompactSplats.usf dispatches
+
+    Dispatch: (ceil(TotalSplatCount / 256), 1, 1)
+
+    New parameters:
+        StructuredBuffer<FProxyGPUMetadata> ProxyMetadataBuffer
+        uint ProxyCount
+        uint TotalSplatCount
+        StructuredBuffer<uint> GlobalSplatClusterIndexBuffer
+        StructuredBuffer<uint> GlobalClusterVisibilityBitmap
+        StructuredBuffer<uint> GlobalSelectedClusterBuffer
+        StructuredBuffer<uint> GlobalLODClusterSelectedBitmap
+        RWStructuredBuffer<uint> GlobalCompactedSplatIndices
+        RWStructuredBuffer<uint> GlobalVisibleCountArray
+
+    Algorithm per thread:
+        globalSplatIdx = SV_DispatchThreadID.x
+        if (globalSplatIdx >= TotalSplatCount) return
+
+        // Find proxy via binary search
+        proxyIdx = FindProxyIndex(globalSplatIdx, ProxyCount, true)
+        metadata = ProxyMetadataBuffer[proxyIdx]
+
+        // Local splat index within this proxy
+        globalSplatStart = (proxyIdx == 0) ? 0 :
+            ProxyMetadataBuffer[proxyIdx-1].GlobalSplatEnd
+        localSplatIdx = globalSplatIdx - globalSplatStart
+
+        // Check cluster visibility (same logic as current CompactSplats)
+        localClusterIdx = GlobalSplatClusterIndexBuffer[
+            metadata.GlobalSplatClusterIndexStart + localSplatIdx]
+
+        // Visibility check using metadata bitmap offsets
+        // ... same bitmap logic, with offsets from metadata ...
+
+        if (visible):
+            uint localOffset
+            InterlockedAdd(
+                GlobalVisibleCountArray[metadata.CompactionCounterIndex],
+                1, localOffset)
+
+            // Write GLOBAL splat index to proxy's compaction section
+            GlobalCompactedSplatIndices[
+                metadata.CompactionOutputStart + localOffset] = globalSplatIdx
+
+--- 4.3 GlobalGatherAndPrefixSum ---
+
+The current PrefixSumVisibleCounts shader already reads GlobalVisibleCountArray
+and computes prefix sums + indirect args. Since GlobalCompactSplats now writes
+directly to GlobalVisibleCountArray, GatherVisibleCount is ELIMINATED entirely.
+
+    Dispatch: (1, 1, 1) with 256 threads (unchanged from current PrefixSum)
+
+    No shader change needed to PrefixSumVisibleCounts itself - it already reads
+    GlobalVisibleCountArray[ProxyCount] and writes GlobalBaseOffsetsBuffer.
+
+    This eliminates 98 GatherVisibleCount dispatches.
+
+--- 4.4 RepackCompactedIndices.usf (NEW) ---
+
+PROBLEM: After compaction, each proxy's visible splats are at scattered
+worst-case offsets in GlobalCompactedSplatIndices (at CompactionOutputStart).
+But the global pipeline expects them packed contiguously by proxy, matching
+GlobalBaseOffsets from the prefix sum.
+
+    Dispatch: INDIRECT using GlobalCalcDistIndirectArgsBuffer
+              (total visible splats / 256)
+
+    Parameters:
+        StructuredBuffer<FProxyGPUMetadata> ProxyMetadataBuffer
+        StructuredBuffer<uint> GlobalVisibleCountArray
+        StructuredBuffer<uint> GlobalBaseOffsetsBuffer
+        StructuredBuffer<uint> GlobalCompactedSplatIndices  // sparse
+        RWStructuredBuffer<uint> GlobalRepackedSplatIndices  // dense
+        uint ProxyCount
+
+    Algorithm per thread:
+        globalVisibleIdx = SV_DispatchThreadID.x
+        if (globalVisibleIdx >= TotalVisibleCount) return
+
+        // Find proxy via binary search on GlobalBaseOffsetsBuffer
+        proxyIdx = BinarySearchBaseOffsets(globalVisibleIdx,
+                                           GlobalBaseOffsetsBuffer, ProxyCount)
+
+        metadata = ProxyMetadataBuffer[proxyIdx]
+        baseOffset = GlobalBaseOffsetsBuffer[proxyIdx]
+        localVisibleIdx = globalVisibleIdx - baseOffset
+
+        // Copy from sparse to dense
+        GlobalRepackedSplatIndices[globalVisibleIdx] =
+            GlobalCompactedSplatIndices[
+                metadata.CompactionOutputStart + localVisibleIdx]
+
+--- 4.5 GlobalCalcViewData.usf ---
+
+Replaces: per-proxy CalcViewDataCompactedGlobal dispatches
+
+    Dispatch: INDIRECT using GlobalCalcDistIndirectArgsBuffer
+              (total visible splats / 256)
+
+    Key change: Read PackedSplatBuffer and LocalToWorld from global buffers
+    via ProxyMetadata instead of per-dispatch shader parameters.
+
+    New parameters:
+        ByteAddressBuffer GlobalPackedSplatBuffer
+        ByteAddressBuffer GlobalSHBuffer
+        StructuredBuffer<FProxyGPUMetadata> ProxyMetadataBuffer
+        StructuredBuffer<uint> GlobalRepackedSplatIndices
+        StructuredBuffer<uint> GlobalBaseOffsetsBuffer
+        uint ProxyCount
+        RWStructuredBuffer<FGaussianSplatViewData> GlobalViewDataBuffer
+
+    Algorithm per thread:
+        globalVisibleIdx = SV_DispatchThreadID.x
+        if (globalVisibleIdx >= TotalVisibleCount) return
+
+        // Find proxy from base offsets
+        proxyIdx = BinarySearchBaseOffsets(globalVisibleIdx,
+                                           GlobalBaseOffsetsBuffer, ProxyCount)
+        metadata = ProxyMetadataBuffer[proxyIdx]
+
+        // Get the global splat index
+        globalSplatIdx = GlobalRepackedSplatIndices[globalVisibleIdx]
+
+        // Read packed splat from global buffer (already at global offset)
+        splatData = LoadPackedSplat(GlobalPackedSplatBuffer, globalSplatIdx * 16)
+
+        // Read LocalToWorld from metadata
+        LocalToWorld = metadata.LocalToWorld
+
+        // Read SH data from global buffer if needed
+        shData = LoadSH(GlobalSHBuffer, globalSplatIdx * SHStride)
+
+        // ... rest of CalcViewData logic UNCHANGED ...
+        // Transform, covariance projection, eigendecomposition, SH eval
+
+        // Write to global ViewData buffer
+        GlobalViewDataBuffer[globalVisibleIdx] = viewData
+
+    Everything downstream (CalcDistances, RadixSort, Draw) is UNCHANGED since
+    it already operates on the global ViewData buffer.
+
+================================================================================
+5. C++ IMPLEMENTATION CHANGES
+================================================================================
+
+--- 5.1 New Class: FGlobalSplatBufferManager ---
+
+File: Source/GaussianSplatting/Private/GlobalSplatBufferManager.h/.cpp
+
+    class FGlobalSplatBufferManager
+    {
+    public:
+        // Called when proxy set changes (add/remove)
+        void RegisterProxy(FGaussianSplatSceneProxy* Proxy);
+        void UnregisterProxy(FGaussianSplatSceneProxy* Proxy);
+        void RebuildStaticBuffers(FRHICommandListImmediate& RHICmdList);
+
+        // Called each frame to update transforms
+        void UpdateProxyMetadata(
+            const TArray<FGaussianSplatSceneProxy*>& Proxies,
+            const FSceneView& View);
+
+        // Getters
+        FRHIBuffer* GetGlobalPackedSplatBuffer() const;
+        FRHIBuffer* GetGlobalClusterBuffer() const;
+        FRHIBuffer* GetGlobalSplatClusterIndexBuffer() const;
+        FRHIBuffer* GetGlobalSHBuffer() const;
+        FRHIBuffer* GetProxyMetadataBuffer() const;
+
+        uint32 GetTotalSplatCount() const;
+        uint32 GetTotalClusterCount() const;
+        uint32 GetTotalLeafClusterCount() const;
+        uint32 GetProxyCount() const;
+
+    private:
+        // Static buffers (rebuilt on proxy set change)
+        FBufferRHIRef GlobalPackedSplatBuffer;
+        FBufferRHIRef GlobalClusterBuffer;
+        FBufferRHIRef GlobalSplatClusterIndexBuffer;
+        FBufferRHIRef GlobalSHBuffer;
+
+        // Per-frame metadata
+        FBufferRHIRef ProxyMetadataBuffer;
+
+        // Dynamic per-frame buffers
+        FBufferRHIRef GlobalClusterVisibilityBitmap;
+        FBufferRHIRef GlobalSelectedClusterBuffer;
+        FBufferRHIRef GlobalLODClusterSelectedBitmap;
+        FBufferRHIRef GlobalCompactedSplatIndices;
+        FBufferRHIRef GlobalRepackedSplatIndices;
+
+        // Tracking
+        TArray<FGaussianSplatSceneProxy*> RegisteredProxies;
+        uint32 TotalSplatCount = 0;
+        uint32 TotalClusterCount = 0;
+        uint32 TotalLeafClusterCount = 0;
+        bool bNeedsRebuild = false;
+    };
+
+--- 5.2 Static Buffer Concatenation ---
+
+RebuildStaticBuffers() algorithm:
+
+    1. Compute total sizes from all registered proxies
+
+    2. Allocate global buffers
+
+    3. For each proxy, copy its buffer data into the global buffer region:
+       - RHICmdList.CopyBufferRegion() for GPU-to-GPU copy
+
+    4. Compute per-proxy offset table (stored internally)
+
+    NOTE on cluster ParentIndex:
+    ClusterBuffer.ParentIndex is LOCAL to each proxy's cluster range.
+    The shader always accesses: GlobalClusterBuffer[metadata.GlobalClusterStartIndex + localIdx]
+    So ParentIndex stays local. No data modification needed.
+
+--- 5.3 Proxy Metadata Upload ---
+
+UpdateProxyMetadata() called each frame:
+
+    1. Build TArray<FProxyGPUMetadata> (CPU)
+    2. For each proxy: fill transform + offsets + cumulative totals
+    3. Upload to ProxyMetadataBuffer (dynamic buffer)
+    Cost: 98 * 128 bytes = 12.5 KB upload. Negligible.
+
+--- 5.4 New Shader Classes ---
+
+File: GaussianSplatShaders.h/.cpp
+
+    FGlobalClusterCullingCS      (GlobalClusterCulling.usf)
+    FGlobalCompactSplatsCS       (GlobalCompactSplats.usf)
+    FRepackCompactedIndicesCS    (RepackCompactedIndices.usf)
+    FGlobalCalcViewDataCS        (GlobalCalcViewData.usf)
+
+--- 5.5 New Dispatch Functions ---
+
+File: GaussianSplatRenderer.h/.cpp
+
+    DispatchGlobalClusterCulling(RHICmdList, View, GlobalBufferManager)
+    DispatchGlobalCompactSplats(RHICmdList, GlobalBufferManager, GlobalAccum)
+    DispatchRepackCompactedIndices(RHICmdList, GlobalBufferManager, GlobalAccum)
+    DispatchGlobalCalcViewData(RHICmdList, View, GlobalBufferManager, GlobalAccum)
+
+--- 5.6 Pipeline Integration ---
+
+    BEFORE:
+        for each proxy:
+            DispatchClusterCulling(proxy)
+            DispatchCompactSplats(proxy)
+            DispatchPrepareIndirectArgs(proxy)
+            DispatchGatherVisibleCount(proxy, globalAccum)
+        DispatchPrefixSumVisibleCounts(globalAccum)
+        for each proxy:
+            DispatchCalcViewDataCompactedGlobal(proxy, globalAccum)
+        DispatchCalcDistancesGlobalIndirect(globalAccum)
+        DispatchRadixSortGlobalIndirect(globalAccum)
+        DrawSplatsGlobalIndirect(globalAccum)
+
+    AFTER:
+        GlobalBufferManager.UpdateProxyMetadata(proxies, view)
+        DispatchResetGlobalBitmaps()                         // 1 dispatch
+        DispatchGlobalClusterCulling()                       // 1 dispatch
+        DispatchGlobalCompactSplats()                        // 1 dispatch
+        DispatchPrefixSumVisibleCounts(globalAccum)          // 1 dispatch (unchanged)
+        DispatchRepackCompactedIndices()                     // 1 dispatch
+        DispatchGlobalCalcViewData()                         // 1 dispatch
+        DispatchCalcDistancesGlobalIndirect(globalAccum)     // 1 dispatch (unchanged)
+        DispatchRadixSortGlobalIndirect(globalAccum)         // 16 dispatches (unchanged)
+        DrawSplatsGlobalIndirect(globalAccum)                // 1 dispatch (unchanged)
+        ----------------------------------------------------------------
+        TOTAL: ~23 dispatches (was ~490)
+
+================================================================================
+6. EXPECTED PERFORMANCE IMPACT
+================================================================================
+
+Assumptions: 98 proxies, current profile data.
+Note: compute work (ALU, bandwidth) is the same - we are only eliminating
+dispatch overhead. The per-thread shader logic is identical.
+
+                            BEFORE (GPU)    AFTER (GPU)     SAVINGS
+ClusterCulling:             1.3ms (113x)    ~0.5ms (1x)     -0.8ms
+CompactSplats:              1.8ms (113x)    ~0.8ms (1x)     -1.0ms
+PrepareIndirectArgs:        534us (113x)    REMOVED          -534us
+GatherVisibleCount:         459us (98x)     REMOVED          -459us
+RepackCompactedIndices:     0               ~50us (1x)       +50us
+CalcViewData:               3.6ms (98x)     ~2.0ms (1x)     -1.6ms
+CalcDistances:              441us           441us            unchanged
+RadixSort:                  2.0ms           2.0ms            unchanged
+Draw:                       6.3ms           6.3ms            unchanged
+PrefixSum:                  9.4us           9.4us            unchanged
+-----------------------------------------------------------------
+TOTAL GPU:                  16.4ms          ~12.1ms          -4.3ms
+
+                            BEFORE (CPU)    AFTER (CPU)     SAVINGS
+ClusterCulling:             4.3ms (98x)     ~50us (1x)      -4.25ms
+CompactSplats:              2.2ms (98x)     ~25us (1x)      -2.17ms
+PrepareIndirectArgs:        2.0ms (98x)     REMOVED          -2.0ms
+GatherVisibleCount:         664us (98x)     REMOVED          -664us
+RepackCompactedIndices:     0               ~25us (1x)       +25us
+CalcViewData:               816us (98x)     ~10us (1x)      -806us
+Metadata upload:            0               ~10us            +10us
+CalcDistances:              17us            17us             unchanged
+RadixSort:                  97us            97us             unchanged
+Draw:                       70us            70us             unchanged
+-----------------------------------------------------------------
+TOTAL CPU:                  10.1ms          ~0.3ms           -9.8ms
+
+SUMMARY:
+    GPU: 16.4ms -> ~12.1ms  (saves ~4.3ms, -26%)
+    CPU: 10.1ms -> ~0.3ms   (saves ~9.8ms, -97%)
+
+The CPU savings are dramatic because nearly all CPU time was dispatch overhead.
+The GPU savings come from eliminating kernel launch latency and improving
+occupancy (one large dispatch saturates the GPU better than 98 small ones).
+
+NOTE: DrawSplatsGlobalIndirect (6.3ms) and RadixSort (2.0ms) are unchanged
+by this plan. These are bounded by actual compute/rasterization work, not
+dispatch overhead. Further optimizing those would require render budget
+(reduces splat count) or algorithmic changes (16-bit sort) - separate efforts.
+
+================================================================================
+7. IMPLEMENTATION ORDER
+================================================================================
+
+STEP 1: FGlobalSplatBufferManager + ProxyMetadataBuffer
+    ADD: GlobalSplatBufferManager.h/.cpp
+    MODIFY: GaussianSplatSceneProxy.cpp (register/unregister hooks)
+    TEST: Verify metadata correctness (offsets, cumulative totals)
+
+STEP 2: GlobalClusterCulling shader + dispatch
+    ADD: Shaders/Private/GlobalClusterCulling.usf
+    ADD: FGlobalClusterCullingCS in GaussianSplatShaders.h/.cpp
+    ADD: DispatchGlobalClusterCulling() in GaussianSplatRenderer.cpp
+    TEST: Compare visibility bitmaps between old per-proxy and new global path
+
+STEP 3: GlobalCompactSplats shader + dispatch
+    ADD: Shaders/Private/GlobalCompactSplats.usf
+    ADD: FGlobalCompactSplatsCS in GaussianSplatShaders.h/.cpp
+    ADD: DispatchGlobalCompactSplats() in GaussianSplatRenderer.cpp
+    TEST: Compare per-proxy visible splat counts with old path
+
+STEP 4: RepackCompactedIndices shader + dispatch
+    ADD: Shaders/Private/RepackCompactedIndices.usf
+    ADD: FRepackCompactedIndicesCS in GaussianSplatShaders.h/.cpp
+    ADD: DispatchRepackCompactedIndices() in GaussianSplatRenderer.cpp
+    TEST: Verify repacked indices match dense layout
+
+STEP 5: GlobalCalcViewData shader + dispatch
+    ADD: Shaders/Private/GlobalCalcViewData.usf
+    ADD: FGlobalCalcViewDataCS in GaussianSplatShaders.h/.cpp
+    ADD: DispatchGlobalCalcViewData() in GaussianSplatRenderer.cpp
+    TEST: Verify rendered output is pixel-identical to old path
+
+STEP 6: Integration
+    MODIFY: GaussianSplatRenderer.cpp
+    - Replace per-proxy loop with global dispatch calls
+    - Add CVar gs.UseGlobalDispatch (default=true) to toggle for comparison
+    PROFILE: Compare with Unreal Insights before/after
+
+STEP 7: Cleanup (after validation)
+    - Remove per-proxy dynamic buffers no longer needed
+    - Remove old per-proxy dispatch functions
+    - Remove toggle CVar
+
+================================================================================
+8. RISKS & MITIGATIONS
+================================================================================
+
+1. BUFFER REBUILD COST ON PROXY CHANGES
+   Risk: Adding/removing a proxy triggers full global buffer rebuild
+   Mitigation: Rebuild is a GPU buffer copy, <1ms for typical scenes. Only
+   happens on level load or actor spawn/destroy, not per-frame. Future: use
+   freelist/gap allocation to avoid full rebuild.
+
+2. MEMORY DURING TRANSITION
+   Risk: During rebuild, both old and new global buffers exist briefly
+   Mitigation: Double-buffer - build new global buffer, swap, release old.
+   Peak memory is 2x static buffer size, only during the brief rebuild.
+
+3. CLUSTER PARENT INDEX VALIDITY
+   Risk: ParentIndex is local per proxy - could be misread in global buffer
+   Mitigation: Shader always accesses as
+   GlobalClusterBuffer[metadata.GlobalClusterStartIndex + localParentIdx]
+   Local indices remain valid. No data patching needed.
+
+4. BINARY SEARCH OVERHEAD
+   Risk: Per-thread binary search adds ALU cost
+   Mitigation: 7 iterations over a 12.5 KB buffer in L1 cache. Measured
+   overhead: <1% of per-thread work. Savings from batching far exceed this.
+
+5. SHADER REGISTER PRESSURE
+   Risk: Global shaders have more parameters (metadata buffer, extra offsets)
+   Mitigation: Extra parameters are just a few SRV bindings and uint constants.
+   Register pressure increase is minimal. The core per-thread ALU is identical.
+
+6. COMPATIBILITY WITH EXISTING FEATURES
+   Risk: Some features (debug visualization, per-proxy stats) assume per-proxy
+   dispatch model
+   Mitigation: ProxyMetadata carries ProxyIndex and ClusterID for debug.
+   Per-proxy stats can be read from GlobalVisibleCountArray after compaction.
+
+================================================================================
+END OF PLAN
+================================================================================
