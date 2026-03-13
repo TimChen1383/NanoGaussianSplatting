@@ -277,17 +277,38 @@ struct FGlobalSplatBufferManager
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
 
 	/**
-	 * Dispatch Stage 4: Repack + GlobalCalcViewData (shadow mode).
+	 * Dispatch Stage 4: Repack + GlobalCalcViewData.
 	 * Called AFTER PrefixSum so GlobalBaseOffsetsBuffer is available.
 	 * Uses ShadowCompactedSplatIndices from Stage 3 as input.
 	 * Reuses GlobalAccumulator's prefix sum results (validated in Stage 3).
+	 *
+	 * @param bWriteToRealBuffer  When true (Stage 5 global path), writes CalcViewData
+	 *   to GlobalAccumulator->GlobalViewDataBuffer instead of ShadowGlobalViewDataBuffer,
+	 *   and skips the validation readback.
 	 */
 	void DispatchRepackAndGlobalCalcViewData(
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
 		FGaussianGlobalAccumulator* GlobalAccumulator,
-		uint32 MaxRenderBudget);
+		uint32 MaxRenderBudget,
+		bool bWriteToRealBuffer = false);
+
+	//------------------------------------------------------------------------
+	// Stage 5: Gather Visible Counts Global (reorder shadow → processed order)
+	//------------------------------------------------------------------------
+
+	/**
+	 * Upload ProcessedToMetadataIndexBuffer and dispatch the GatherVisibleCountsGlobal
+	 * shader to reorder ShadowVisibleCountArray (metadata order) into
+	 * GlobalVisibleCountArray (processed order) so PrefixSum works unchanged.
+	 *
+	 * Must be called AFTER DispatchGlobalCompactSplats (Stage 3) and BEFORE PrefixSum.
+	 */
+	void DispatchGatherVisibleCountsGlobal(
+		FRHICommandListImmediate& RHICmdList,
+		const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
+		FGaussianGlobalAccumulator* GlobalAccumulator);
 
 	bool IsReady() const { return bStaticBuffersBuilt && ProxyMetadataBuffer.IsValid(); }
 	uint32 GetProxyCount() const { return (uint32)LastProxySet.Num(); }

@@ -353,7 +353,7 @@ PASS CONDITION before moving to Stage 5:
     - Verified at multiple camera angles and distances
 
 --------------------------------------------------------------------------------
-STAGE 5 -- Full Switchover                                       [ ] Not started
+STAGE 5 -- Full Switchover                                       [x] Complete
 --------------------------------------------------------------------------------
 
 GOAL: Replace the per-proxy loop with global dispatches. Measure performance.
@@ -439,7 +439,7 @@ PASS CONDITION:
   STAGE 2 -- Global Cluster Culling (Shadow)    [x] Complete
   STAGE 3 -- Global Compact Splats (Shadow)     [x] Complete
   STAGE 4 -- Repack + Global CalcViewData       [x] Complete
-  STAGE 5 -- Full Switchover                    [ ] Not started
+  STAGE 5 -- Full Switchover                    [x] Complete
   STAGE 6 -- Cleanup                            [ ] Not started
 
 ================================================================================

@@ -1,0 +1,29 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+//
+// GatherVisibleCountsGlobal.usf
+//
+// Reorders ShadowVisibleCountArray (metadata order) → GlobalVisibleCountArray (processed order).
+// Each thread i reads ShadowVisibleCountArray[ProcessedToMetadataIndex[i]]
+// and writes to GlobalVisibleCountArray[i].
+//
+// Dispatch: (1, 1, 1) — single group handles up to 256 proxies.
+
+#include "/Engine/Public/Platform.ush"
+
+StructuredBuffer<uint>    ShadowVisibleCountArray;
+StructuredBuffer<uint>    ProcessedToMetadataIndexBuffer;
+RWStructuredBuffer<uint>  GlobalVisibleCountArray;
+uint NumProcessedProxies;
+
+[numthreads(256, 1, 1)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+	uint i = DTid.x;
+	if (i >= NumProcessedProxies)
+	{
+		return;
+	}
+
+	uint metaIdx = ProcessedToMetadataIndexBuffer[i];
+	GlobalVisibleCountArray[i] = ShadowVisibleCountArray[metaIdx];
+}

@@ -684,6 +684,32 @@ class FGlobalCalcViewDataCS : public FGlobalShader
 };
 
 //----------------------------------------------------------------------
+// Stage 5: Gather Visible Counts Global (reorder shadow → processed order)
+//----------------------------------------------------------------------
+
+/**
+ * Reorders ShadowVisibleCountArray (metadata order) → GlobalVisibleCountArray (processed order).
+ * Dispatch: (1, 1, 1) — single group handles up to 256 proxies.
+ */
+class FGatherVisibleCountsGlobalCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGatherVisibleCountsGlobalCS);
+	SHADER_USE_PARAMETER_STRUCT(FGatherVisibleCountsGlobalCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ShadowVisibleCountArray)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ProcessedToMetadataIndexBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, GlobalVisibleCountArray)
+		SHADER_PARAMETER(uint32, NumProcessedProxies)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+//----------------------------------------------------------------------
 // Global Accumulator + Compaction prefix-sum shaders
 //----------------------------------------------------------------------
 

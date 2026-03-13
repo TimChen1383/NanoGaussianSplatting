@@ -18,7 +18,7 @@ extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 
 static TAutoConsoleVariable<int32> CVarValidateGlobalCulling(
 	TEXT("gs.ValidateGlobalCulling"),
-	1,
+	0,
 	TEXT("Stage 2: Compare per-proxy cluster culling results against global culling.\n")
 	TEXT("0 = disabled, 1 = enabled (GPU readback + CPU compare, stalls GPU)"),
 	ECVF_RenderThreadSafe);
@@ -48,13 +48,15 @@ bool FGlobalSplatBufferManager::UpdateIfNeeded(
 		}
 	}
 
-	// Detect proxy set change (count or identity)
+	// Detect proxy set change (count or identity, order-independent).
+	// The input array may be sorted differently each frame (e.g. by camera distance),
+	// so we compare as unordered sets to avoid spurious rebuilds.
 	bool bChanged = (ValidProxies.Num() != LastProxySet.Num());
 	if (!bChanged)
 	{
 		for (int32 i = 0; i < ValidProxies.Num(); i++)
 		{
-			if (ValidProxies[i] != LastProxySet[i])
+			if (!LastProxySet.Contains(ValidProxies[i]))
 			{
 				bChanged = true;
 				break;
@@ -870,7 +872,7 @@ void FGlobalSplatBufferManager::DispatchGlobalClusterCulling(
 
 static TAutoConsoleVariable<int32> CVarValidateGlobalCompact(
 	TEXT("gs.ValidateGlobalCompact"),
-	1,
+	0,
 	TEXT("Stage 3: Compare per-proxy visible splat counts against global compact.\n")
 	TEXT("0 = disabled, 1 = enabled (GPU readback + CPU compare, stalls GPU)"),
 	ECVF_RenderThreadSafe);
@@ -1080,7 +1082,7 @@ void FGlobalSplatBufferManager::DispatchGlobalCompactSplats(
 
 static TAutoConsoleVariable<int32> CVarValidateGlobalViewData(
 	TEXT("gs.ValidateGlobalViewData"),
-	1,
+	0,
 	TEXT("Stage 4: Compare global CalcViewData output against per-proxy path.\n")
 	TEXT("0 = disabled, 1 = enabled (GPU readback + CPU compare, stalls GPU)"),
 	ECVF_RenderThreadSafe);
@@ -1192,6 +1194,100 @@ void FGlobalSplatBufferManager::UploadProxyRenderParams(
 }
 
 // ============================================================================
+// Stage 5: DispatchGatherVisibleCountsGlobal
+// ============================================================================
+
+void FGlobalSplatBufferManager::DispatchGatherVisibleCountsGlobal(
+	FRHICommandListImmediate& RHICmdList,
+	const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
+	FGaussianGlobalAccumulator* GlobalAccumulator)
+{
+	if (!IsReady() || TotalSplatCount == 0 || GetProxyCount() == 0)
+	{
+		return;
+	}
+
+	// Stage 3 shadow compact buffers must exist (ShadowVisibleCountArray)
+	if (!bShadowCompactBuffersAllocated)
+	{
+		return;
+	}
+
+	if (!GlobalAccumulator || !GlobalAccumulator->GlobalVisibleCountArrayBufferUAV.IsValid())
+	{
+		return;
+	}
+
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatStage5_GatherVisibleCountsGlobal);
+
+	const uint32 NumProcessed = (uint32)ValidProxies.Num();
+
+	// Build and upload ProcessedToMetadataIndexBuffer (needed by both this step and Repack)
+	{
+		if (NumProcessed > AllocatedMappingCount)
+		{
+			ProcessedToMetadataIndexBuffer.SafeRelease();
+			ProcessedToMetadataIndexBufferSRV.SafeRelease();
+
+			const uint32 NewCapacity = FMath::Max(NumProcessed + NumProcessed / 5, 16u);
+			FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+				TEXT("ProcessedToMetadataIndexBuffer"),
+				NewCapacity * (uint32)sizeof(uint32),
+				(uint32)sizeof(uint32),
+				BUF_Dynamic | BUF_ShaderResource | BUF_StructuredBuffer)
+				.SetInitialState(ERHIAccess::SRVCompute);
+			ProcessedToMetadataIndexBuffer = RHICmdList.CreateBuffer(Desc);
+			ProcessedToMetadataIndexBufferSRV = RHICmdList.CreateShaderResourceView(
+				ProcessedToMetadataIndexBuffer,
+				FRHIViewDesc::CreateBufferSRV()
+					.SetType(FRHIViewDesc::EBufferType::Structured)
+					.SetStride((uint32)sizeof(uint32)));
+			AllocatedMappingCount = NewCapacity;
+		}
+
+		TArray<uint32> MappingArray;
+		MappingArray.SetNumZeroed(NumProcessed);
+		for (uint32 i = 0; i < NumProcessed; i++)
+		{
+			int32 MetaIdx = LastProxySet.Find(ValidProxies[i]);
+			MappingArray[i] = (MetaIdx != INDEX_NONE) ? (uint32)MetaIdx : 0;
+		}
+
+		void* Data = RHICmdList.LockBuffer(ProcessedToMetadataIndexBuffer, 0,
+			NumProcessed * sizeof(uint32), RLM_WriteOnly);
+		FMemory::Memcpy(Data, MappingArray.GetData(), NumProcessed * sizeof(uint32));
+		RHICmdList.UnlockBuffer(ProcessedToMetadataIndexBuffer);
+	}
+
+	// Dispatch GatherVisibleCountsGlobal shader
+	TShaderMapRef<FGatherVisibleCountsGlobalCS> GatherShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	if (!GatherShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GS Stage5] GatherVisibleCountsGlobal shader not valid"));
+		return;
+	}
+
+	// Transitions
+	RHICmdList.Transition(FRHITransitionInfo(ShadowVisibleCountArray, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(ProcessedToMetadataIndexBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalVisibleCountArrayBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+
+	FGatherVisibleCountsGlobalCS::FParameters Params;
+	Params.ShadowVisibleCountArray = ShadowVisibleCountArraySRV;
+	Params.ProcessedToMetadataIndexBuffer = ProcessedToMetadataIndexBufferSRV;
+	Params.GlobalVisibleCountArray = GlobalAccumulator->GlobalVisibleCountArrayBufferUAV;
+	Params.NumProcessedProxies = NumProcessed;
+
+	SetComputePipelineState(RHICmdList, GatherShader.GetComputeShader());
+	SetShaderParameters(RHICmdList, GatherShader, GatherShader.GetComputeShader(), Params);
+	RHICmdList.DispatchComputeShader(1, 1, 1);
+	UnsetShaderUAVs(RHICmdList, GatherShader, GatherShader.GetComputeShader());
+
+	// UAV barrier: GlobalVisibleCountArray must be written before PrefixSum reads it
+	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalVisibleCountArrayBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+}
+
+// ============================================================================
 // Stage 4: DispatchRepackAndGlobalCalcViewData
 // ============================================================================
 
@@ -1200,7 +1296,8 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 	const FSceneView& View,
 	const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
 	FGaussianGlobalAccumulator* GlobalAccumulator,
-	uint32 MaxRenderBudget)
+	uint32 MaxRenderBudget,
+	bool bWriteToRealBuffer)
 {
 	if (!IsReady() || TotalSplatCount == 0 || GetProxyCount() == 0)
 	{
@@ -1322,8 +1419,14 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 		RHICmdList.Transition(FRHITransitionInfo(ProxyRenderParamsBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 		RHICmdList.Transition(FRHITransitionInfo(ShadowSelectedClusterBuffer, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
 
-		// Transition output
-		RHICmdList.Transition(FRHITransitionInfo(ShadowGlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		// Transition output — use real buffer when bWriteToRealBuffer, shadow buffer otherwise
+		FBufferRHIRef& ViewDataOutputBuffer = bWriteToRealBuffer
+			? GlobalAccumulator->GlobalViewDataBuffer
+			: ShadowGlobalViewDataBuffer;
+		FUnorderedAccessViewRHIRef& ViewDataOutputUAV = bWriteToRealBuffer
+			? GlobalAccumulator->GlobalViewDataBufferUAV
+			: ShadowGlobalViewDataBufferUAV;
+		RHICmdList.Transition(FRHITransitionInfo(ViewDataOutputBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 		// Create SRV for ShadowSelectedClusterBuffer (read-only in this stage)
 		FShaderResourceViewRHIRef ShadowSelectedClusterBufferSRV = RHICmdList.CreateShaderResourceView(
@@ -1344,7 +1447,7 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 		CalcParams.ShadowSelectedClusterBuffer = ShadowSelectedClusterBufferSRV;
 		CalcParams.ShadowRepackedSplatIndices = ShadowRepackedSplatIndicesSRV;
 		CalcParams.GlobalBaseOffsetsBuffer = GlobalAccumulator->GlobalBaseOffsetsBufferSRV;
-		CalcParams.ShadowGlobalViewDataBuffer = ShadowGlobalViewDataBufferUAV;
+		CalcParams.ShadowGlobalViewDataBuffer = ViewDataOutputUAV;
 		CalcParams.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 		CalcParams.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 		CalcParams.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
@@ -1366,14 +1469,24 @@ void FGlobalSplatBufferManager::DispatchRepackAndGlobalCalcViewData(
 		UnsetShaderUAVs(RHICmdList, CalcViewDataShader, CalcViewDataShader.GetComputeShader());
 	}
 
-	// Transition shadow ViewData buffer to readable state for validation
-	RHICmdList.Transition(FRHITransitionInfo(ShadowGlobalViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	// Transition output ViewData buffer to readable state
+	if (bWriteToRealBuffer)
+	{
+		// Real buffer: transition for downstream CalcDistances/RadixSort consumption
+		RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	}
+	else
+	{
+		// Shadow buffer: transition for validation readback
+		RHICmdList.Transition(FRHITransitionInfo(ShadowGlobalViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	}
 
 	// ---------------------------------------------------------------
 	// Validation: compare ALL visible ViewData entries as sorted sets
 	// Only read TotalVisible entries (not stale data from prior frames)
+	// Skip validation when writing to the real buffer (Stage 5 production path)
 	// ---------------------------------------------------------------
-	if (CVarValidateGlobalViewData.GetValueOnRenderThread() > 0 && ValidProxies.Num() > 0)
+	if (!bWriteToRealBuffer && CVarValidateGlobalViewData.GetValueOnRenderThread() > 0 && ValidProxies.Num() > 0)
 	{
 		// Compute TotalVisible by summing ShadowVisibleCountArray for processed proxies
 		// (same counts validated in Stage 3, so this is reliable)
