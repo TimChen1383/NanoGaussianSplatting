@@ -8,7 +8,6 @@
 
 class FGaussianSplatSceneProxy;
 class FSceneView;
-struct FGaussianGlobalAccumulator;
 
 /**
  * Per-proxy GPU metadata uploaded to ProxyMetadataBuffer each frame.
@@ -44,7 +43,7 @@ struct FProxyGPUMetadata
 	uint32 CompactionOutputStart;        // Element offset into GlobalCompactedSplatIndices (worst-case slot)
 
 	// SH
-	uint32 GlobalSHByteOffset;           // Byte offset into GlobalSHBuffer for this proxy's SH data
+	uint32 GlobalSHStartIndex;           // Element offset into GlobalSHBuffer — TODO Stage 4
 
 	// Cumulative totals for binary search in global shaders
 	uint32 GlobalLeafClusterEnd;         // Exclusive end of this proxy's leaf clusters in global space
@@ -148,40 +147,6 @@ struct FGlobalSplatBufferManager
 	bool bShadowCompactBuffersAllocated = false;
 
 	//------------------------------------------------------------------------
-	// Stage 4: Shadow ViewData buffers (Repack + GlobalCalcViewData validation)
-	//------------------------------------------------------------------------
-
-	/** Shadow repacked splat indices — dense contiguous layout (TotalSplatCount worst case). */
-	FBufferRHIRef ShadowRepackedSplatIndices;
-	FUnorderedAccessViewRHIRef ShadowRepackedSplatIndicesUAV;
-	FShaderResourceViewRHIRef ShadowRepackedSplatIndicesSRV;
-
-	/** Shadow global view data buffer — one FGaussianSplatViewData per visible splat. */
-	FBufferRHIRef ShadowGlobalViewDataBuffer;
-	FUnorderedAccessViewRHIRef ShadowGlobalViewDataBufferUAV;
-	FShaderResourceViewRHIRef ShadowGlobalViewDataBufferSRV;
-
-	/** Per-proxy render parameters (OpacityScale, SplatScale, SH settings). */
-	FBufferRHIRef ProxyRenderParamsBuffer;
-	FShaderResourceViewRHIRef ProxyRenderParamsBufferSRV;
-	uint32 AllocatedRenderParamsCount = 0;
-
-	/** Mapping from processed-proxy index to metadata index (uploaded per frame). */
-	FBufferRHIRef ProcessedToMetadataIndexBuffer;
-	FShaderResourceViewRHIRef ProcessedToMetadataIndexBufferSRV;
-	uint32 AllocatedMappingCount = 0;
-
-	bool bShadowViewDataBuffersAllocated = false;
-
-	//------------------------------------------------------------------------
-	// Global SH buffer (static, concatenated raw bytes from all proxies)
-	//------------------------------------------------------------------------
-
-	FBufferRHIRef GlobalSHBuffer;
-	FShaderResourceViewRHIRef GlobalSHBufferSRV;
-	uint32 TotalSHBytes = 0;
-
-	//------------------------------------------------------------------------
 	// CPU-side state
 	//------------------------------------------------------------------------
 
@@ -257,37 +222,6 @@ struct FGlobalSplatBufferManager
 	void DispatchGlobalCompactSplats(
 		FRHICommandListImmediate& RHICmdList,
 		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
-
-	//------------------------------------------------------------------------
-	// Stage 4: Repack + Global CalcViewData (shadow mode)
-	//------------------------------------------------------------------------
-
-	/**
-	 * Allocate shadow ViewData buffers for Stage 4 validation.
-	 * Called lazily on first dispatch. Resized when totals change.
-	 */
-	void EnsureShadowViewDataBuffers(FRHICommandListImmediate& RHICmdList);
-
-	/**
-	 * Upload per-proxy render parameters (OpacityScale, SplatScale, SH settings).
-	 * Called each frame alongside UploadProxyMetadata.
-	 */
-	void UploadProxyRenderParams(
-		FRHICommandListImmediate& RHICmdList,
-		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
-
-	/**
-	 * Dispatch Stage 4: Repack + GlobalCalcViewData (shadow mode).
-	 * Called AFTER PrefixSum so GlobalBaseOffsetsBuffer is available.
-	 * Uses ShadowCompactedSplatIndices from Stage 3 as input.
-	 * Reuses GlobalAccumulator's prefix sum results (validated in Stage 3).
-	 */
-	void DispatchRepackAndGlobalCalcViewData(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		const TArray<FGaussianSplatSceneProxy*>& ValidProxies,
-		FGaussianGlobalAccumulator* GlobalAccumulator,
-		uint32 MaxRenderBudget);
 
 	bool IsReady() const { return bStaticBuffersBuilt && ProxyMetadataBuffer.IsValid(); }
 	uint32 GetProxyCount() const { return (uint32)LastProxySet.Num(); }

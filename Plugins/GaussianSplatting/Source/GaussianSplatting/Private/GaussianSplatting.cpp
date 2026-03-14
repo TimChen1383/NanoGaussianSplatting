@@ -435,20 +435,19 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 							NumProcessedProxies++;
 						}
 
-						// Build proxy array for global dispatch validation
-						TArray<FGaussianSplatSceneProxy*> ProcessedProxies;
-						ProcessedProxies.Reserve(NumProcessedProxies);
-						for (int32 pi = 0; pi < NumProcessedProxies; pi++)
-						{
-							ProcessedProxies.Add(ValidProxies[pi].Proxy);
-						}
-
 						// --------------------------------------------------
 						// Stage 2: Global Cluster Culling (shadow mode)
 						// Runs AFTER per-proxy culling to validate results
 						// --------------------------------------------------
 						if (RawSplatBufferManager && RawSplatBufferManager->IsReady())
 						{
+							// Build proxy array for validation readback
+							TArray<FGaussianSplatSceneProxy*> ProcessedProxies;
+							ProcessedProxies.Reserve(NumProcessedProxies);
+							for (int32 pi = 0; pi < NumProcessedProxies; pi++)
+							{
+								ProcessedProxies.Add(ValidProxies[pi].Proxy);
+							}
 							RawSplatBufferManager->DispatchGlobalClusterCulling(
 								RHICmdList, *SceneView, ProcessedProxies);
 
@@ -501,18 +500,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 								i,
 								RawAccumulator,
 								MaxRenderBudget);
-						}
-
-						// --------------------------------------------------
-						// Stage 4: Repack + Global CalcViewData (shadow mode)
-						// Runs AFTER PrefixSum + per-proxy CalcViewData
-						// Uses ShadowCompactedSplatIndices from Stage 3 + GlobalBaseOffsets from PrefixSum
-						// --------------------------------------------------
-						if (RawSplatBufferManager && RawSplatBufferManager->IsReady())
-						{
-							RawSplatBufferManager->DispatchRepackAndGlobalCalcViewData(
-								RHICmdList, *SceneView, ProcessedProxies,
-								RawAccumulator, MaxRenderBudget);
 						}
 
 						// --------------------------------------------------

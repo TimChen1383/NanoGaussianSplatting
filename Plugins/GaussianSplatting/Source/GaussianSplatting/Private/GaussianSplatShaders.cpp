@@ -30,10 +30,6 @@ IMPLEMENT_GLOBAL_SHADER(FGlobalCompactSplatsCS, "/Plugin/GaussianSplatting/Priva
 IMPLEMENT_GLOBAL_SHADER(FCompactSplatsCS, "/Plugin/GaussianSplatting/Private/CompactSplats.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FPrepareIndirectArgsCS, "/Plugin/GaussianSplatting/Private/PrepareIndirectArgs.usf", "MainCS", SF_Compute);
 
-// Stage 4: Repack + Global CalcViewData (shadow mode)
-IMPLEMENT_GLOBAL_SHADER(FRepackCompactedIndicesCS, "/Plugin/GaussianSplatting/Private/RepackCompactedIndices.usf", "MainCS", SF_Compute);
-IMPLEMENT_GLOBAL_SHADER(FGlobalCalcViewDataCS, "/Plugin/GaussianSplatting/Private/GlobalCalcViewData.usf", "MainCS", SF_Compute);
-
 // NOTE: GPU-driven LOD shaders removed in unified approach
 // LOD splats are now processed by CalcViewData.usf using the same buffers as original splats
 

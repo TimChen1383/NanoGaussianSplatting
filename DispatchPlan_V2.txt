@@ -245,7 +245,7 @@ PASS CONDITION before moving to Stage 3:
     - Verified across multiple frames
 
 --------------------------------------------------------------------------------
-STAGE 3 -- Global Compact Splats (Shadow)                        [x] Complete
+STAGE 3 -- Global Compact Splats (Shadow)                        [x] In progress
 --------------------------------------------------------------------------------
 
 GOAL: Prove GlobalCompactSplats correctly identifies visible splats per proxy.
@@ -300,7 +300,7 @@ PASS CONDITION before moving to Stage 4:
     - Verified across multiple frames
 
 --------------------------------------------------------------------------------
-STAGE 4 -- Repack + Global CalcViewData (Shadow)                 [x] Complete
+STAGE 4 -- Repack + Global CalcViewData (Shadow)                 [ ] Not started
 --------------------------------------------------------------------------------
 
 GOAL: Prove the full new pipeline produces correct view data.
@@ -437,8 +437,8 @@ PASS CONDITION:
 
   STAGE 1 -- CPU Buffer Infrastructure          [x] Complete
   STAGE 2 -- Global Cluster Culling (Shadow)    [x] Complete
-  STAGE 3 -- Global Compact Splats (Shadow)     [x] Complete
-  STAGE 4 -- Repack + Global CalcViewData       [x] Complete
+  STAGE 3 -- Global Compact Splats (Shadow)     [x] In progress
+  STAGE 4 -- Repack + Global CalcViewData       [ ] Not started
   STAGE 5 -- Full Switchover                    [ ] Not started
   STAGE 6 -- Cleanup                            [ ] Not started
 

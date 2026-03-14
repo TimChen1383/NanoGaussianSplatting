@@ -32,7 +32,7 @@ struct FProxyMetadata
 	uint CompactionCounterIndex;              // 4
 	uint CompactionOutputStart;               // 4
 
-	uint GlobalSHByteOffset;                  // 4
+	uint GlobalSHStartIndex;                  // 4
 
 	uint GlobalLeafClusterEnd;                // 4
 	uint GlobalSplatEnd;                      // 4
