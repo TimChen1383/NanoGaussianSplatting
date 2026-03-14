@@ -71,6 +71,9 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 	}
 };
 
+// NOTE: FGaussianSplatCalcLODViewDataGPUDrivenCS and FUpdateDrawArgsCS have been removed
+// in the unified approach. LOD splats are now processed by CalcViewData using the same
+// buffers as original splats. See CalcViewData.usf for unified LOD handling.
 
 /**
  * Compute shader for calculating sort distances (depth) for each splat

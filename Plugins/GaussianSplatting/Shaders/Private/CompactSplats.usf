@@ -1,0 +1,106 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Build a compact list of visible splat indices using atomics.
+// This reduces work in subsequent passes (CalcViewData, CalcDistances, RadixSort)
+// by only processing visible splats instead of all splats.
+
+#include "/Engine/Public/Platform.ush"
+
+// Input: Cluster visibility bitmaps
+StructuredBuffer<uint> SplatClusterIndexBuffer;    // Maps each splat to its cluster
+StructuredBuffer<uint> ClusterVisibilityBitmap;    // Leaf cluster visibility
+StructuredBuffer<uint> LODClusterSelectedBitmap;   // Parent cluster LOD selection
+StructuredBuffer<uint> SelectedClusterBuffer;      // Maps leaf cluster -> selected cluster
+
+// Output: Compact list of visible splat indices
+RWStructuredBuffer<uint> CompactedSplatIndices;    // Output: visible splat indices
+RWStructuredBuffer<uint> VisibleSplatCount;        // Output: atomic counter
+
+// Parameters
+uint TotalSplatCount;      // Total splats (original + LOD)
+uint OriginalSplatCount;   // Original splat count (LOD splats start after this)
+uint UseLODRendering;      // 1 = enable LOD skip logic
+
+#ifndef THREADGROUP_SIZE
+#define THREADGROUP_SIZE 256
+#endif
+
+// Check if a leaf cluster is visible using the visibility bitmap
+bool IsClusterVisible(uint clusterIndex)
+{
+	uint bitmapIndex = clusterIndex / 32;
+	uint bitMask = 1u << (clusterIndex % 32);
+	return (ClusterVisibilityBitmap[bitmapIndex] & bitMask) != 0;
+}
+
+// Check if a parent cluster is selected for LOD rendering
+bool IsLODClusterSelected(uint clusterIndex)
+{
+	uint bitmapIndex = clusterIndex / 32;
+	uint bitMask = 1u << (clusterIndex % 32);
+	return (LODClusterSelectedBitmap[bitmapIndex] & bitMask) != 0;
+}
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint splatIndex = DispatchThreadId.x;
+	if (splatIndex >= TotalSplatCount)
+	{
+		return;
+	}
+
+	// Determine if this splat is visible
+	bool isLODSplat = (splatIndex >= OriginalSplatCount);
+	uint clusterIndex = SplatClusterIndexBuffer[splatIndex];
+	bool isVisible = false;
+
+	if (isLODSplat)
+	{
+		// LOD splat: visible if its parent cluster is selected for LOD rendering
+		if (UseLODRendering)
+		{
+			isVisible = IsLODClusterSelected(clusterIndex);
+		}
+		// If LOD rendering is disabled, LOD splats are never visible
+	}
+	else
+	{
+		// Original splat: check leaf cluster visibility
+		uint leafClusterIndex = clusterIndex;
+
+		if (!IsClusterVisible(leafClusterIndex))
+		{
+			// Leaf cluster is culled
+			isVisible = false;
+		}
+		else if (UseLODRendering)
+		{
+			// Check if covered by parent LOD
+			uint packedSelected = SelectedClusterBuffer[leafClusterIndex];
+			uint selectedClusterID = packedSelected & 0x00FFFFFF;
+
+			// If selected cluster is different from leaf, this splat is covered by LOD
+			if (selectedClusterID != leafClusterIndex)
+			{
+				isVisible = false;
+			}
+			else
+			{
+				isVisible = true;
+			}
+		}
+		else
+		{
+			isVisible = true;
+		}
+	}
+
+	// If visible, append to compact list using atomic
+	if (isVisible)
+	{
+		uint outputIndex;
+		InterlockedAdd(VisibleSplatCount[0], 1, outputIndex);
+		CompactedSplatIndices[outputIndex] = splatIndex;
+	}
+}

@@ -1,0 +1,23 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Update indirect draw args with LOD splat count
+// Single-thread shader that adds LOD splat output count to instance count
+
+#include "/Engine/Private/Common.ush"
+
+// Indirect draw argument buffer
+// Structure: [0] IndexCountPerInstance, [1] InstanceCount, [2] StartIndexLocation, [3] BaseVertexLocation, [4] StartInstanceLocation
+RWStructuredBuffer<uint> IndirectDrawArgsBuffer;
+
+// LOD splat output count (from CalcLODViewDataGPUDriven)
+StructuredBuffer<uint> LODSplatOutputCountBuffer;
+
+[numthreads(1, 1, 1)]
+void MainCS()
+{
+	// Add LOD splat count to instance count
+	// IndirectDrawArgsBuffer[1] already contains visible original splat count from ClusterCulling
+	// We add the LOD splat output count (which includes both valid and invalid LOD splats)
+	// Invalid splats will be sorted to the end and won't be drawn (sorted past visible count)
+	IndirectDrawArgsBuffer[1] += LODSplatOutputCountBuffer[0];
+}

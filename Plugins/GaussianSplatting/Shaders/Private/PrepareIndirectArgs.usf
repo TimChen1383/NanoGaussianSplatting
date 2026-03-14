@@ -1,0 +1,65 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Prepare indirect dispatch and draw arguments from visible splat count.
+// This enables GPU-driven work reduction where subsequent passes only process visible splats.
+
+#include "/Engine/Public/Platform.ush"
+
+// Input: Visible splat count from CompactSplats
+StructuredBuffer<uint> VisibleSplatCount;
+
+// Output: Indirect dispatch arguments (for CalcViewData, CalcDistances compute shaders)
+// Format: uint3 (numGroupsX, numGroupsY, numGroupsZ)
+RWStructuredBuffer<uint> IndirectDispatchArgs;
+
+// Output: Indirect draw arguments (for DrawSplats)
+// Format: IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation
+RWStructuredBuffer<uint> IndirectDrawArgs;
+
+// Output: Sort indirect dispatch arguments for radix sort CountCS/ScatterCS
+// Format: uint3 (NumTiles, 1, 1)
+RWStructuredBuffer<uint> SortIndirectArgs;
+
+// Output: Sort parameters for radix sort shaders
+// Format: uint2 (SortCount, NumTiles)
+RWStructuredBuffer<uint> SortParamsBuffer;
+
+// Thread group size used by CalcViewData/CalcDistances
+uint ComputeThreadGroupSize;
+
+[numthreads(1, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint visibleCount = VisibleSplatCount[0];
+
+	// Prepare indirect dispatch args for CalcViewData/CalcDistances
+	// numGroups = ceil(visibleCount / ThreadGroupSize)
+	uint numGroups = (visibleCount + ComputeThreadGroupSize - 1) / ComputeThreadGroupSize;
+	numGroups = max(numGroups, 1); // At least 1 group to avoid empty dispatch issues
+
+	IndirectDispatchArgs[0] = numGroups;  // numGroupsX
+	IndirectDispatchArgs[1] = 1;          // numGroupsY
+	IndirectDispatchArgs[2] = 1;          // numGroupsZ
+
+	// Prepare indirect draw args
+	// We draw 2 triangles (6 indices) per quad, 1 quad per visible splat
+	IndirectDrawArgs[0] = 6;              // IndexCountPerInstance (6 indices = 2 triangles)
+	IndirectDrawArgs[1] = visibleCount;   // InstanceCount (one instance per visible splat)
+	IndirectDrawArgs[2] = 0;              // StartIndexLocation
+	IndirectDrawArgs[3] = 0;              // BaseVertexLocation
+	IndirectDrawArgs[4] = 0;              // StartInstanceLocation
+
+	// Prepare sort indirect dispatch args for radix sort
+	// NumTiles = ceil(visibleCount / 1024), where 1024 = BLOCK_THREADS * KEYS_PER_THREAD
+	uint sortCount = visibleCount;
+	uint numSortTiles = (sortCount + 1023) / 1024;
+	numSortTiles = max(numSortTiles, 1);
+
+	SortIndirectArgs[0] = numSortTiles;   // dispatch X for CountCS/ScatterCS
+	SortIndirectArgs[1] = 1;              // dispatch Y
+	SortIndirectArgs[2] = 1;              // dispatch Z
+
+	// Sort parameters read by radix sort shaders
+	SortParamsBuffer[0] = sortCount;      // Count (number of elements to sort)
+	SortParamsBuffer[1] = numSortTiles;   // NumTiles
+}

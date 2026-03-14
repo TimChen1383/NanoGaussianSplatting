@@ -22,6 +22,61 @@ public:
 	~FGaussianSplatRenderer();
 
 	/**
+	 * Dispatch the view data calculation compute shader
+	 * @param bUseLODRendering If true, skip splats covered by parent LOD clusters
+	 */
+	static void DispatchCalcViewData(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		int32 SplatCount,
+		int32 SHOrder,
+		float OpacityScale,
+		float SplatScale,
+		bool bUseLODRendering = false
+	);
+
+	/**
+	 * Dispatch the distance calculation compute shader
+	 */
+	static void DispatchCalcDistances(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources,
+		int32 SplatCount
+	);
+
+	/**
+	 * Dispatch radix sort for back-to-front ordering
+	 */
+	static void DispatchRadixSort(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources,
+		int32 SplatCount
+	);
+
+	/**
+	 * Dispatch radix sort with indirect dispatch (GPU-driven sort count)
+	 * Uses SortIndirectArgsBuffer for CountCS/ScatterCS dispatch dimensions
+	 * and SortParamsBuffer for Count/NumTiles read by shaders.
+	 * Only sorts the visible splats after compaction.
+	 */
+	static void DispatchRadixSortIndirect(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources
+	);
+
+	/**
+	 * Draw the Gaussian splats
+	 */
+	static void DrawSplats(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		int32 SplatCount
+	);
+
+	/**
 	 * Dispatch cluster culling compute shader (Nanite-style optimization)
 	 * Tests cluster bounding spheres against view frustum
 	 * @param ErrorThreshold Screen-space error threshold in pixels for LOD selection
@@ -35,6 +90,34 @@ public:
 		const FMatrix& LocalToWorld,
 		float ErrorThreshold,
 		bool bUseLODRendering = false
+	);
+
+	// NOTE: DispatchCalcLODViewDataGPUDriven and DispatchUpdateDrawArgs have been removed
+	// in the unified approach. LOD splats are now processed by DispatchCalcViewData.
+
+	/**
+	 * Dispatch CalcViewData with compaction (indirect dispatch)
+	 * Only processes visible splats from compacted list
+	 */
+	static void DispatchCalcViewDataCompacted(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		int32 SplatCount,
+		int32 OriginalSplatCount,
+		int32 SHOrder,
+		float OpacityScale,
+		float SplatScale
+	);
+
+	/**
+	 * Dispatch CalcDistances with indirect dispatch
+	 * Only processes visible splats
+	 */
+	static void DispatchCalcDistancesIndirect(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources
 	);
 
 	//----------------------------------------------------------------------
