@@ -280,14 +280,14 @@ public:
 		int32 DebugMode
 	);
 
+private:
+	/** Calculate next power of 2 */
+	static uint32 NextPowerOfTwo(uint32 Value);
+
 	/**
 	 * Extract frustum planes from view-projection matrix
 	 * Planes are in world space, normalized with normal pointing inward
 	 * Order: Left, Right, Bottom, Top, Near, Far
 	 */
 	static void ExtractFrustumPlanes(const FMatrix& ViewProjection, FVector4f OutPlanes[6]);
-
-private:
-	/** Calculate next power of 2 */
-	static uint32 NextPowerOfTwo(uint32 Value);
 };

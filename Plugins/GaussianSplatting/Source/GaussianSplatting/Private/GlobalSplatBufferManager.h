@@ -7,7 +7,6 @@
 #include "RHIResources.h"
 
 class FGaussianSplatSceneProxy;
-class FSceneView;
 
 /**
  * Per-proxy GPU metadata uploaded to ProxyMetadataBuffer each frame.
@@ -58,13 +57,11 @@ static_assert(sizeof(FProxyGPUMetadata) == 128, "FProxyGPUMetadata must be 128 b
 /**
  * Manages global GPU buffers that concatenate data across all registered proxies.
  *
- * Stage 1: CPU offset table, ProxyMetadataBuffer, and static buffer
+ * Stage 1 (this file): CPU offset table, ProxyMetadataBuffer, and static buffer
  *   concatenation (GlobalPackedSplatBuffer, GlobalClusterBuffer,
  *   GlobalSplatClusterIndexBuffer). No rendering changes.
  *
- * Stage 2: Shadow bitmaps for global cluster culling validation.
- *   DispatchGlobalClusterCulling runs after per-proxy culling and writes
- *   to shadow buffers. ValidateGlobalCulling compares results.
+ * Stages 2-5 will add shadow/global bitmaps, compaction buffers, and view data.
  *
  * Owned by FGaussianSplattingModule (render-thread lifetime), like FGaussianGlobalAccumulator.
  */
@@ -93,43 +90,6 @@ struct FGlobalSplatBufferManager
 	/** One FProxyGPUMetadata per proxy. StructuredBuffer, 128 bytes/entry. */
 	FBufferRHIRef ProxyMetadataBuffer;
 	FShaderResourceViewRHIRef ProxyMetadataBufferSRV;
-
-	//------------------------------------------------------------------------
-	// Stage 2: Shadow bitmaps (global cluster culling validation)
-	//------------------------------------------------------------------------
-
-	/** Shadow visibility bitmap — 1 bit per cluster, concatenated across proxies. */
-	FBufferRHIRef ShadowClusterVisibilityBitmap;
-	FUnorderedAccessViewRHIRef ShadowClusterVisibilityBitmapUAV;
-
-	/** Shadow selected cluster buffer — one entry per leaf cluster across all proxies. */
-	FBufferRHIRef ShadowSelectedClusterBuffer;
-	FUnorderedAccessViewRHIRef ShadowSelectedClusterBufferUAV;
-
-	/** Shadow LOD cluster selected bitmap. */
-	FBufferRHIRef ShadowLODClusterSelectedBitmap;
-	FUnorderedAccessViewRHIRef ShadowLODClusterSelectedBitmapUAV;
-
-	/** Shadow visible cluster count (single uint32). */
-	FBufferRHIRef ShadowVisibleClusterCountBuffer;
-	FUnorderedAccessViewRHIRef ShadowVisibleClusterCountBufferUAV;
-
-	/** Shadow LOD cluster list. */
-	FBufferRHIRef ShadowLODClusterBuffer;
-	FUnorderedAccessViewRHIRef ShadowLODClusterBufferUAV;
-
-	/** Shadow LOD cluster count (single uint32). */
-	FBufferRHIRef ShadowLODClusterCountBuffer;
-	FUnorderedAccessViewRHIRef ShadowLODClusterCountBufferUAV;
-
-	/** Shadow LOD splat total (single uint32). */
-	FBufferRHIRef ShadowLODSplatTotalBuffer;
-	FUnorderedAccessViewRHIRef ShadowLODSplatTotalBufferUAV;
-
-	/** Staging buffer for GPU readback of shadow visible cluster count. */
-	FBufferRHIRef ShadowValidationStagingBuffer;
-
-	bool bShadowBuffersAllocated = false;
 
 	//------------------------------------------------------------------------
 	// CPU-side state
@@ -168,26 +128,6 @@ struct FGlobalSplatBufferManager
 
 	/** Release all GPU buffers. Must be called from the render thread before destruction. */
 	void Release();
-
-	//------------------------------------------------------------------------
-	// Stage 2: Global Cluster Culling (shadow mode)
-	//------------------------------------------------------------------------
-
-	/**
-	 * Allocate shadow bitmaps and counters for global culling validation.
-	 * Called lazily on first dispatch. Resized when totals change.
-	 */
-	void EnsureShadowBuffers(FRHICommandListImmediate& RHICmdList);
-
-	/**
-	 * Dispatch the global cluster culling shader (shadow mode).
-	 * Called AFTER per-proxy culling so both results exist for comparison.
-	 * ValidProxies is needed for readback validation (comparing per-proxy counts).
-	 */
-	void DispatchGlobalClusterCulling(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		const TArray<FGaussianSplatSceneProxy*>& ValidProxies);
 
 	bool IsReady() const { return bStaticBuffersBuilt && ProxyMetadataBuffer.IsValid(); }
 	uint32 GetProxyCount() const { return (uint32)LastProxySet.Num(); }

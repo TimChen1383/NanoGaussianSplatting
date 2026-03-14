@@ -311,7 +311,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 			PassParameters,
 			ERDGPassFlags::Raster,
 			[SceneView, VisibleProxies, TotalSplatCount, bCanSkip, bAllNanite, RawAccumulator,
-			 RawSplatBufferManager, SharedIndexBuffer, CurrentVP, CurrentDebugMode,
+			 SharedIndexBuffer, CurrentVP, CurrentDebugMode,
 			 CurrentDebugForceLODLevel, DebugMode, MaxRenderBudget](FRHICommandListImmediate& RHICmdList)
 			{
 				if (!SceneView) return;
@@ -433,23 +433,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 							CumulativeSplatCount += (uint32)SplatCount;
 							NumProcessedProxies++;
-						}
-
-						// --------------------------------------------------
-						// Stage 2: Global Cluster Culling (shadow mode)
-						// Runs AFTER per-proxy culling to validate results
-						// --------------------------------------------------
-						if (RawSplatBufferManager && RawSplatBufferManager->IsReady())
-						{
-							// Build proxy array for validation readback
-							TArray<FGaussianSplatSceneProxy*> ProcessedProxies;
-							ProcessedProxies.Reserve(NumProcessedProxies);
-							for (int32 pi = 0; pi < NumProcessedProxies; pi++)
-							{
-								ProcessedProxies.Add(ValidProxies[pi].Proxy);
-							}
-							RawSplatBufferManager->DispatchGlobalClusterCulling(
-								RHICmdList, *SceneView, ProcessedProxies);
 						}
 
 						// --------------------------------------------------
