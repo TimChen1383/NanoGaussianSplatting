@@ -1,356 +1,410 @@
 
 [To Do list]
 (General)
-- clean up this architecture note
 - Demo - 野柳(FPV style) + llama + sky的ply + ocean
+- add slicer.py to GitHub
+- 把plugin檔案pull merge > 移除到剩下plugin > release
+週日目標完成全部，只剩demo
+
+
+
+
 - list what feature exposed to blueprint > important API
 - important variable expose to details panel
-- add slicer to GitHub
-- add document
-- clean up the code
+- write document on github page
 
-(Performance)
-***複製會卡的一個原因是因為print了一堆log > 複製mesh不會print一堆log 
-- reached the knowledge limitation. Stop for now
-- MaxRenderBudget is not the good solution. Some splats will disappear
 
-(VRAM Management)
-- check VRAM release or not when switching level
-- Need to clean VRAM by myself? using RHI, not UObject > when component destroyed, VRAM should release(including switching level)
-- try lower VRAM usage > compare to sparkjs and unity's design
-- think about Max Budget console command again
+Import > enable Nanite > drag and drop
 
-**************************************************************************************************
+- Gaussian Splat Asset
+- Gaussian splat component
 
+GitHub新增新的章節 "Settings"
+- Splar Asset
+- Quality
+- Performance
 
 
+================================================================================
+SOURCE FILE BRIEF
+================================================================================
+--------------------------------------------------------------------------------
+  RUNTIME MODULE -- Public Headers
+--------------------------------------------------------------------------------
 
---------------------------------------------------------------------------------------------------------------------------
-[Full render process]
+GaussianSplatting.h
+  Module entry point. Creates and owns the ViewExtension and GlobalAccumulator.
+  Registers shader directories on startup.
 
- Big Picture: Rendering Pipeline
+GaussianSplatActor.h / .cpp
+  A simple UE Actor wrapper that holds a GaussianSplatComponent as its root.
+  Lets you drag-and-drop a Gaussian splat directly into a level.
 
-  Phase 0 — Asset Import (Editor/Cook Time)
+GaussianSplatComponent.h / .cpp
+  UActorComponent that references a GaussianSplatAsset and holds per-instance settings (SH order, opacity/scale multipliers, LOD error thresholds, culling).
+  Creates the SceneProxy and reacts to asset changes.
 
-  1. Parse PLY — Read raw splat data (position, rotation, scale, opacity, color, SH coefficients)
-  2. Morton Code Sort — Encode 3D positions into 64-bit Morton codes (Z-order curve) for spatial locality, then sort all
-   splats
-  3. Leaf Cluster Creation — Group every 128 consecutive (Morton-sorted) splats into a leaf cluster, compute bounding
-  sphere per cluster
-  4. Parent Hierarchy Construction — Recursively merge leaf clusters into parent clusters (max 8 children), building a
-  tree
-  5. LOD Splat Generation — For each parent cluster, merge 4 child splats → 1 parent splat (4:1 reduction). Compute
-  MaxError = max world-space distance between original and merged representation
-  6. Serialize — Save cluster hierarchy + all splat buffers + SH buffers as .uasset
+GaussianSplatAsset.h / .cpp
+  UObject asset storing the compressed splat data as bulk serialized bytes. Handles compression (positions, rotations, scales, SH, colors), Morton-swizzled color texture creation, cluster hierarchy building, and thumbnail support.
 
-  ---
-  Phase 1 — CPU Per-Frame Setup (Runtime)
+GaussianDataTypes.h
+  Core CPU-side data structures: FGaussianSplatData (raw per-splat data), FGaussianChunkInfo (quantization bounds), compression format enums, and a large set of utility functions (Morton codes, SH DC conversion, quaternion packing, splat serialization helpers).
 
-  Stage 1: Global Buffer Setup
+GaussianSplatSceneProxy.h / .cpp
+  The FPrimitiveSceneProxy implementation. Owns per-instance RHI GPU resources (position/color/SH buffers, cluster visibility bitmaps, compaction buffers).
+  FGaussianSplatGPUResources is the struct that holds all RHI buffers and SRV/UAVs.
 
-  - Hook into engine's PostOpaqueRender (after TSR, before translucency)
-  - Gather all visible GaussianSplatSceneProxy instances
-  - Concatenate each proxy's static GPU buffers (PackedSplat, Cluster, SH, SplatClusterIndex) into single global buffers
-   (GPU-to-GPU copy, only when proxy set changes)
-  - Upload proxy metadata every frame: LocalToWorld matrix, buffer offsets, cluster counts, error thresholds
+GaussianSplatRenderData.h
+  Shared render data (ref-counted, one instance per asset shared across proxies). Caches CPU splat/cluster data and manages shared GPU buffers so the same asset data is not duplicated in GPU memory for every component instance.
 
-  Cache check: If camera/LOD settings unchanged → skip Stages 2–4, reuse previous frame's sort results
+GaussianClusterTypes.h
+  Data structures for the Nanite-style LOD cluster hierarchy: FGaussianCluster (bounding sphere, LOD error, parent/child links) and FGaussianClusterHierarchy.
 
-  ---
-  Phase 2 — GPU Cluster Culling (Single Dispatch for ALL Proxies)
+GaussianClusterBuilder.h / .cpp
+  Builds the cluster hierarchy from raw splat data. Sorts splats by Morton code, creates leaf clusters, merges them into parent levels, and computes bounding volumes and error metrics for LOD selection.
 
-  Shader: GlobalClusterCulling.usf — one thread per leaf cluster across all proxies
+GaussianSplatRenderer.h / .cpp
+  Static dispatcher that issues all compute and draw calls. Covers: CalcViewData, CalcDistances, RadixSort, ClusterCulling, Compaction, PrepareIndirectArgs, and global accumulator variants. Owns the shader parameter setup logic.
 
-  For each leaf cluster:
-  1. Binary search metadata buffer → find owning proxy
-  2. Frustum Culling — Test cluster bounding sphere against 6 frustum planes. If outside → skip
-  3. Screen-Space Error LOD Selection — ProjectedError = (MaxError / Distance) × ScreenHeight × 0.5. If error <
-  threshold → use this cluster's splats. If error > threshold → select parent cluster's LOD splats instead
-  4. Output — Set bits in ClusterVisibilityBitmap and LODClusterSelectedBitmap
+GaussianGlobalAccumulator.h / .cpp
+  A shared GPU accumulator for batching multiple proxies into a single draw call. Holds pooled sort-key, distance, and indirect-argument buffers that are reused across all visible proxies each frame.
 
-  ---
-  Phase 3 — GPU Splat Compaction (Single Dispatch for ALL Splats)
+GaussianSplatViewExtension.h / .cpp
+  FSceneViewExtension that tracks registered proxies and fires render-thread callbacks to drive the rendering pipeline each frame.
 
-  Shader: GlobalCompactSplats.usf — one thread per splat across all proxies
+PLYFileReader.h / .cpp
+  Reads binary PLY files (including files larger than 2 GB). Detects SH band count, validates header, handles endianness, and applies per-property linearization (quaternion normalization, exp-scale decoding, sigmoid opacity).
 
-  For each splat:
-  1. Look up which cluster it belongs to
-  2. Check if that cluster is visible (via bitmap)
-  3. If visible → atomically write splat index into a dense CompactedSplatIndices array
+GaussianSplatShaders.h / .cpp
+  Declares and implements all C++ shader class wrappers (IMPLEMENT_GLOBAL_SHADER macros) for every compute and graphics shader pass.
 
-  Result: Massive reduction — e.g. 719K splats → maybe 1K–5K visible splats depending on LOD/view
+--------------------------------------------------------------------------------
+  RUNTIME MODULE -- Shaders
+--------------------------------------------------------------------------------
 
-  ---
-  Phase 4 — Prefix Sum & Indirect Args (GPU, Single Thread Group)
+GaussianSplatting.hlsl
+  The main shared HLSL utility library. Contains: quaternion math, 3D covariance projection, Morton encode/decode, spherical harmonics evaluation, splat data loading from GPU buffers, and packed splat format decoding.
 
-  - Prefix sum over per-proxy visible counts → compute global base offsets
-  - Generate indirect dispatch/draw args on GPU (no CPU readback needed):
-    - CalcViewData dispatch size
-    - Sort dispatch size
-    - Draw args: {6 indices, TotalVisibleSplats instances}
-  - Apply render budget cap if configured
+GaussianDataTypes.ush
+  HLSL mirror of the CPU data structs. Defines GPU-side FGaussianSplatViewData, FGaussianGPUCluster, FGaussianChunkInfo, plus helper functions (half packing, Morton ops, 2D covariance eigendecomposition).
 
-  ---
-  Phase 5 — CalcViewData (GPU, Indirect Dispatch)
+GaussianSplatting.ush
+  Packed splat unpacking helpers: octahedral axis-angle to quaternion, log-scale decoding, uint8 color unpacking. Bridges the packed 16-byte format to full floats.
 
-  Shader: CalcViewData.usf — one thread per visible splat
+SphericalHarmonics.ush
+  Evaluates spherical harmonic coefficients up to degree 3 for view-dependent color. Called from CalcViewData and the vertex shader.
 
-  For each visible splat:
-  1. Load packed position/rotation/scale, apply LocalToWorld transform
-  2. Evaluate Spherical Harmonics — Compute view-dependent color using camera direction (up to 3rd order SH)
-  3. Project to screen space — Compute 2D covariance from 3D Gaussian, extract principal axes (Axis1, Axis2) for quad
-  rendering
-  4. Pack color, store clip position and velocity (for TAA/TSR)
+CalcViewData.usf
+  Compute shader. Transforms each visible splat from world space to screen space: projects position to clip coords, computes 2D covariance axes and radii. Also handles cluster LOD splat blending. One thread per splat.
 
-  Output: GlobalViewDataBuffer — screen-space rendering data for all visible splats
+CalcDistances.usf
+  Compute shader. Extracts the depth value from each splat's clip position and converts it to a sortable uint32 key for back-to-front ordering.
 
-  ---
-  Phase 6 — Calculate Sort Keys (GPU, Indirect Dispatch)
+RadixSort.usf
+  GPU LSD radix sort (8-bit, 4 passes). Three compute shaders: CountCS (per-tile histograms), PrefixSumCS (digit offsets), ScatterCS (key redistribution). Supports both direct and indirect dispatch.
 
-  Shader: CalcDistances.usf
+ClusterCulling.usf
+  Compute shader. Frustum-culls clusters by testing bounding spheres and selects LOD levels based on projected screen-space error. Outputs per-cluster visibility and LOD selection bitmaps.
 
-  - Extract depth from each splat's clip position
-  - Convert to sortable uint (handling UE's reversed-Z)
-  - Behind-camera splats get 0xFFFFFFFF (sorted to end / discarded)
+CompactSplats.usf
+  Compute shader. Uses atomics to build a tight list of visible splat indices, filtering by cluster visibility and LOD bitmaps. Eliminates culled/inactive splats before the sort.
 
-  ---
-  Phase 7 — Radix Sort (GPU, 4 Passes)
-
-  Shader: RadixSort.usf — LSD Radix Sort, 8-bit digits, 32-bit keys
-
-  Each pass (4 total, for bits 0–7, 8–15, 16–23, 24–31):
-  1. Count — Build per-tile histograms (256 buckets)
-  2. PrefixSum — Exclusive prefix sum per digit across tiles
-  3. DigitPrefixSum — Prefix sum across all 256 digits
-  4. Scatter — Rearrange keys+values to sorted positions (ping-pong buffers)
-
-  Result: All visible splats sorted back-to-front for correct alpha blending
-
-  ---
-  Phase 8 — Draw (GPU Rasterization, Single Indirect Draw Call)
-
-  Single DrawIndexedPrimitiveIndirect for ALL proxies combined
-
-  - Vertex Shader — Load ViewData via sorted key, expand quad corners using Axis1/Axis2 (covariance principal axes)
-  - Pixel Shader — Compute Gaussian falloff exp(-d²), unpack color, alpha blend (premultiplied), output velocity vectors
-
-  Output: Color + Depth + Velocity textures → composited into the frame
-
-  ---
-  Key Optimization Summary
-
-  ┌──────────────────────────────────┬───────────────────────────────────────────────────────────────────────────┐
-  │            Technique             │                                  Benefit                                  │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ Hierarchical cluster culling     │ Test ~5,600 clusters instead of ~719K splats                              │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ Screen-space error LOD           │ Dynamically reduce splat count for distant clusters (4:1 per level)       │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ GPU compaction                   │ Only process visible splats in later stages (~100x reduction possible)    │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ Indirect dispatch/draw           │ All dispatch sizes computed on GPU — zero CPU readback                    │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ Single global dispatch per stage │ One culling pass, one compaction pass, one sort, one draw for ALL proxies │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ Camera-static cache              │ Skip Stages 2–5 if view unchanged, reuse previous sort                    │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ Radix sort                       │ O(n) GPU sort, 4 passes for 32-bit keys                                   │
-  ├──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-  │ Render budget cap                │ Limit total splat count, prioritize closer proxies                        │
-  └──────────────────────────────────┴───────────────────────────────────────────────────────────────────────────┘
-
-
-
-
-
---------------------------------------------------------------------------------------------------------------------
-
-
-
-VRam consumption
-
-----------------------------------------------
-[Performance optimization design]
-	- Nanite-style cluster + screen space error
-	- GPU Accumulation >　merge drall call > DrawIndexedIndirect
-	- radix sort
-	- Max Render Budget
-	- single global dispatch both CPU and GPU
-
-
-----------------------------------------------------------
-[Render Pipeline Hook locaiton]
-	- After TSR
-	- no depth of field, no motion blur
-
-
-
------------------------------------------------------------------------------------------
-[Cluster的結構長這樣]
-  For your 719k splat asset, approximate structure:
-  ┌───────────┬──────────┬─────────────────────┐
-  │ LOD Level │ Clusters │     Description     │
-  ├───────────┼──────────┼─────────────────────┤
-  │ 0 (leaf)  │ ~5617    │ Original splats     │
-  ├───────────┼──────────┼─────────────────────┤
-  │ 1         │ ~702     │ First merged level  │
-  ├───────────┼──────────┼─────────────────────┤
-  │ 2         │ ~88      │ Second merged level │
-  ├───────────┼──────────┼─────────────────────┤
-  │ 3         │ ~11      │ Third merged level  │
-  ├───────────┼──────────┼─────────────────────┤
-  │ 4         │ ~2       │ Fourth merged level │
-  ├───────────┼──────────┼─────────────────────┤
-  │ 5         │ 1        │ Root cluster        │
-  └───────────┴──────────┴─────────────────────┘
-
-  For your 1.5M splat asset, approximate structure:
-  ┌───────────┬───────────┬─────────────────────┐
-  │ LOD Level │ Clusters  │     Description     │
-  ├───────────┼───────────┼─────────────────────┤
-  │ 0 (leaf)  │ ~11718    │ Original splats     │
-  ├───────────┼───────────┼─────────────────────┤
-  │ 1         │ ~1464     │ First merged level  │
-  ├───────────┼───────────┼─────────────────────┤
-  │ 2         │ ~183      │ Second merged level │
-  ├───────────┼───────────┼─────────────────────┤
-  │ 3         │ ~22       │ Third merged level  │
-  ├───────────┼───────────┼─────────────────────┤
-  │ 4         │ ~2        │ Fourth merged level │
-  ├───────────┼───────────┼─────────────────────┤
-  │ 5         │ 1         │ Root cluster        │
-  └───────────┴───────────┴─────────────────────┘
-
-
-[每個cluster點的數量長這樣]
-  LOD Level 0 (Leaf):     128 original splats per cluster
-  LOD Level 1:            128/4 = 32 LOD splats per cluster (merge 4 splats → 1)
-  LOD Level 2:            32/4 = 8 LOD splats per cluster
-  LOD Level 3:            8/4 = 2 LOD splats per cluster
-  LOD Level 4:            2/4 = 1 LOD splat per cluster
-
------------------------------------------------------------------------------------------
-
-[GlobalAccumulator]
-	- bindless rendering: add more details
-	- indirect rendering: add more details
-
-
-[Screen Space Projected Error]
-	*這一段有很大的機率有問題
-	- Error = How much the LOD version is "wrong" compared to the original
-	- LOD splat是相較於leaf cluster高階的點，原理是將leaf cluster的點merge成25%
-	- merge的原理是平均position, rotation, color...2.3等資料
-	- world space error: 原始點跟merge點相差的距離(看有多error)
-	- screen space error: world space error做screen space轉換。我們在乎的是screen space的差異有多大而不是world space
-	- Close > large projected error > low LOD
-	- Far > small projected error > high LOD
-	- MaxError = The actual error value STORED in each cluster (computed during import)
-	- ErrorThreshold = The acceptable limit SET by user (runtime setting)
-	- screen space error是在runtime下計算的
-	- ErrorThreshold > 就是可以接受的範圍
-	- MaxError跟ErrorThreshold有點問題
-	- 每個cluster都會有MaxError
-	- MaxError的數值是蠻隨機的? 畢竟cluster是依照morton code去切的
-	- MaxError是用來幹嘛的?
-	- MaxError算是離散程度，就是一個在world space中merge splat跟cluster splat的最大距離 > 其實就是看這段長度在screen space下有多長(是否有在ErrorThreshold的容許範圍)
-
-
-[Cluster System]
-	- Process: Original points > Morton Code > Create Leaf Cluster > Create Parent Cluster > Create LOD splats > save to UGaussianSplatAsset > runtime culling
-	- Morton Code: make points adjacent in 3D spce also adjacent in memory(1D Array). Z line adjacent as the final result in 3D space (faster for memory cache). Random order to spatially coherent
-	- Create Leaf Cluster: Ater encoded Morton Code and arrange points into 1D Array, for each 128 points sliced into a cluster. Create bounds for frustum culling, screen space error
-	- cluster是meta data加在point data上面
-	- Create LOD splats: merge 4 points into one points(blending position, rotation and color value)
-	- Total Point Count will be larger Than Original PLY. Total Points = Original Splats + LOD Splats
-	- splat在decrease的同時，範圍也會變大，照理說不會disappear才對
-	- ClusterCulling.usf是主要的LOD選擇算法
-	- 紀錄每個cluster最大的離散程度就好 > 這就是MaxError的來由
-
-[LOD splats]
-	- 所以LOD splats會包含他是哪一層LOD的資訊?
-	- LOD debug mode好像可以看到LOD的資訊?
-	- so the final point counts of our uasset will be much larger than the original PLY point count right?
-	- Does LOD splats include the LOD data of each cluster? So leaf cluster is LOD 0, the merged higher level cluster will be LOD1, then the merged even higher level cluster will be LOD2, somthing like that?
-	- As I remember our debug console command "gs.ShowClusterBounds 2" will show the LOD by color in the level. Is it displaying the color based on the current LOD data stored inside LOD splats?
-	
-
---------------------------------------------------------------------------------------------
-[General]
-	- this plugin has 2 modules(library/plugin), defined in GaussianSplatting.uplugin file
-	- GaussianSplatting is Runtime Type(always), GaussianSplattingEditor is Editor type(editor only, won't ship with game)
-	- header files use forward declarations when possible, .cpp files use #include
-	- UPrimitiveComponent > can be place in the world and render
-	- render workflow: game thread > scene proxy > render thread > shader > GPU
-	- BufferRHIRef > GPU side都是這個type
-	- GPU的memory跟CPU的是無法共用的
-	- shader會用到Buffer裡面的資料比如ViewDataBuffer
-	- Any data a shader need will need to create a buffer(in GPU memory)
-	- GPU resource is just buffer(static buffer and dynamic buffer)
-	- copy the data from RAM into VRAM
-	- GPU variable has no type at all, untyped
-	- CPU run C++ on RAM, GPU run HLSL on VRAM
-	- CPU side UE will use the garbage collector to clean up the memory after actor got deleted
-	- GPU side we will need to destroy by ourself
-	- 如果沒有destroy會造成memory leak。CPU side是因為有garbage collector
-	- UE本身就有一大串cmdlist跟GPU resource task，我只是把它reference過來，加入新funciton，再還回去
-	- free VRAM when gaussian splat component got deleted
-	- compute shader: not vertex shader, not pixel shader. pure computing, not related to output pixel
-	- 用渲染的pixel去決定目前渲染的粗糙程度在畫面中能不能被接受 > 有多少pixel是錯的
-	- the file size which has Nanite enabled will be 30% larger
-
---------------------------------------------------------------------------------------------
-[Editor Module]
-	- "PLYFileReader": Tools for process PLY binary files. Support reading and parsing data (position, rotation, scale, opacity, color)
-	- "GaussianSplatAssetFactory": Import PLY file, build clusters and convert it into custom GaussianSplatAsset .uasset. Support reimport and mark file dirty
-	- "GaussianSplatAssetTypeActions": Controls how the imported asset looks and behaves in the content browser editor
-
---------------------------------------------------------------------------------------------
-[Runtime Module]
-	[Data]
-	- "GaussianDataTypes": Data stuct and enum for GaussianSplatAsset (FGaussianSplatData PLY raw data for each point)
-	- "GaussianSplatAsset": .uasset which contains Gaussian Splatting data from PLY files. Fundamental UObject(pure data) + helper functions
-	- we use custom .uasset "Gaussian Splat Asset"(serialized, UObject). Won't use original PLY file
-	
-	[Cluster]
-	- "GaussianClusterTypes": define the point number of cluster in each level, helper functions (Encode Morton code...)
-	- "GaussianClusterBuilder": define the cluster tree and point reduction ratio. Used in GaussianSplatAssetFactory
-	
-	[Actor & Component]
-	- "GaussianSplatActor": Contain GaussianSplatComponent. Can be placed in the level
-	- "GaussianSplatComponent": Game thread. Create component, expose user variables, include GaussianSplatAsset and GaussianSplatSceneProxy
-	
-	[GPU Data Management]
-	- "GaussianSplatSceneProxy": Render thread. Mirror of the GaussianSplatComponent for GPU. Copy the data from bulk data on CPU(RAM), register GPU Resources(buffer), upload buffers to GPU(VRAM), shader use the buffer for calculation, destroy bufer after GaussianSplatComponent got removed
-	- A thread safe, render-only copy of the component’s rendering data(UPrimitiveComponent). Render Thread won't touch UComponents
-	- pure resource management
-	- Buffer(pure GPU memory)
-	- ShaderResourceViewRHIRef(SRV)(interpret the memory into type, shader read only)
-	- UnorderedAccessViewRHIRef(UAV)(interpret the memory into type, shader read/write)
-	- Static buffers: uploaded once from asset data, never change(PositionBuffer, OtherDataBuffer, SHBuffer, ClusterBuffer)
-	- Dynamic buffers: allocated once but overwritten every frame by compute shaders(ViewDataBuffer, SortDistanceBuffer, SortKeysBuffer)
-	- variable on GPU are untyped
-
-	[Render Pipeline Integration]
-	- "GaussianSplatViewExtension": register/unregister GaussianSceneProxy(we don't hook the render into pipeline here)
-	- "GaussianSplatting": Module. Incude GaussianSplatViewExtension, build RDG, hook into render pipeline(currently before translucency)
-	- each render pipeline stage usually contain lots of passes. RDG will be used for cleaning up the render
-	
-	[Render]
-	- "GaussianSplatShaders": declare shader parameters struct, link with all shader files(.usf)
-	- "GaussianSplatRenderer": connect parameters between GaussianSplatSceneProxy and GaussianSplatShaders. Add live view state(camera data) each frame
-
-------------------------------------------------------------------------
-[Shader]
-	*Shaders will be fire through GaussianSplatRenderer's dispatch functions
-	*Buffer were created through GaussianSceneProxy. Shader calculated based on the buffer(reference)
-	- "CalcDistances.usf": For each splat, extracts Z coordinate from ViewDataBuffer. Converts depth to sortable uint
-	- "RadixSort.usf": GPU gaussian splats sorting
-	- "CalcViewData.usf": Transform 3D splat data to 2D screen-space data. Pass calculated result to ViewDataBuffer
-	- "GaussianSplatRendering.usf": final render. Rasterrization, vertex shader, pixel shader
-	- "GaussianSplatting.ush": some helper functions for loading data from buffer
-	- "ClusterCulling.usf": Frustum culling and LOD selection at cluster level for Nanite-style optimization(screen space error)
-	- "GaussianDataTypes.ush": some data type
-	- "SphericalHarmonics.ush": spherical harmonics calculation
-
-----------------------------------------------------------------------------------------------
+PrepareIndirectArgs.usf
+  Compute shader. Reads visible splat/cluster counts and writes the indirect dispatch and draw argument buffers so subsequent passes need no CPU readback.
+
+GlobalAccumulatorPrefixSum.usf
+  Compute shader. Computes a prefix sum over per-proxy visible splat counts to assign non-overlapping slots in the global accumulator buffers.
+
+GaussianSplatRendering.usf
+  Vertex + Pixel shader for rasterization. Expands each splat to a screen-space quad, evaluates the 2D Gaussian alpha, blends additively, encodes velocity for TAA/TSR. Supports cluster debug visualization (color by cluster ID).
+
+--------------------------------------------------------------------------------
+  EDITOR MODULE
+--------------------------------------------------------------------------------
+
+GaussianSplattingEditorModule.h / .cpp
+  Editor module startup/shutdown. Registers all editor-specific factories and type actions.
+
+GaussianSplatAssetFactory.h / .cpp
+  UFactory for importing PLY files into GaussianSplatAsset objects via the Content Browser import workflow.
+
+GaussianSplatAssetTypeActions.h / .cpp
+  Asset context menu actions in the Content Browser: open properties, reimport, toggle Nanite cluster hierarchy on/off.
+
+ActorFactoryGaussianSplat.h / .cpp
+  UActorFactory so dragging a GaussianSplatAsset from the Content Browser into a level automatically spawns a GaussianSplatActor.
+
+GaussianSplatThumbnailRenderer.h / .cpp
+  Renders a visual thumbnail for GaussianSplatAsset entries in the Content Browser using the asset's color data.
+
+
+================================================================================
+  GAUSSIAN SPLATTING PLUGIN - RENDER PIPELINE
+================================================================================
+--------------------------------------------------------------------------------
+  STAGE 1 — IMPORT  (Editor only, runs once)
+--------------------------------------------------------------------------------
+
+User imports a .ply file via the Content Browser.
+
+  PLYFileReader
+    - Reads binary PLY header, detects SH band count (degree 0/1/2/3)
+    - Streams vertex data (supports files > 2 GB)
+    - Applies linearization: exp() on scales, sigmoid() on opacity,
+      normalize quaternions
+
+  GaussianSplatAsset
+    - Compresses splat data into bulk-serialized bytes:
+        Positions     → chunk-relative quantized (16-bit per axis)
+        Rotations     → octahedral axis-angle packed into uint8 x4
+        Scales        → log-space uint8 per axis
+        Colors (DC)   → Morton-swizzled RGBA8 texture for cache efficiency
+        SH bands 1-3  → stored separately, loaded on demand by SH order setting
+    - Builds Nanite-style cluster hierarchy (GaussianClusterBuilder):
+        Sort splats by 3D Morton code (spatial locality)
+        Group into leaf clusters (~64 splats each)
+        Merge leaves into parent clusters, compute bounding sphere + LOD error
+        Each parent stores a down-sampled "LOD splat" representing its children
+    - Saved to .uasset — import is complete
+
+Result: a compressed UObject asset holding all splat data + a cluster tree.
+
+
+--------------------------------------------------------------------------------
+  STAGE 2 — LOAD INTO SCENE  (Game thread / editor placement)
+--------------------------------------------------------------------------------
+
+  GaussianSplatActor / GaussianSplatComponent
+    - Actor is dragged into the level or spawned at runtime
+    - Component holds a reference to the GaussianSplatAsset
+    - Per-instance settings live here:
+        SH order (0–3), opacity multiplier, scale multiplier,
+        LOD error threshold, LOD bias, frustum cull toggle
+
+  GaussianSplatSceneProxy  (created on render thread)
+    - One proxy per component instance
+    - Allocates per-instance RHI GPU buffers:
+        PackedSplatBuffer    — 16 bytes/splat (pos + rot + scale + color index)
+        SHBuffer             — spherical harmonic coefficients
+        ClusterBuffer        — cluster hierarchy nodes
+        LODSplatBuffer       — pre-baked LOD splats for parent clusters
+        + working buffers for culling, compaction, sorting (allocated per-proxy)
+    - Registers itself with GaussianSplatViewExtension
+
+  GaussianSplatRenderData  (shared, one per asset)
+    - Ref-counted; if two components reference the same asset they share
+      the static GPU buffers (no duplicate uploads)
+
+
+--------------------------------------------------------------------------------
+  STAGE 3 — RENDER HOOK  (Render thread, every frame)
+--------------------------------------------------------------------------------
+
+  UE render pipeline hook point: PostOpaqueRender delegate
+    - Fires after all opaque geometry is rendered
+    - Before post-processing (tone-map, bloom, etc.)
+    - This is where the plugin injects its work each frame
+
+  GaussianSplatViewExtension / OnPostOpaqueRender_RenderThread
+    - Collects all registered proxies visible this frame
+    - Sorts them front-to-back (closer proxies processed first for budget)
+    - Checks render budget (gs.MaxRenderBudget):
+        If total splat count exceeds budget, proxies beyond the limit are skipped
+    - Decides which render path to use (see Stage 4)
+
+  Camera-Static Skip Cache
+    - Compares current ViewProjectionMatrix (TAA/TSR jitter removed) to last frame
+    - If camera has not moved AND all proxy states are unchanged:
+        Skip Phases 1-3, reuse the previously sorted result
+        Jump straight to the draw call
+    - Major perf win for static viewpoints
+
+
+--------------------------------------------------------------------------------
+  STAGE 4 — GPU PIPELINE  (Render thread, compute + draw)
+--------------------------------------------------------------------------------
+
+Two render paths exist depending on whether all visible proxies have Nanite
+cluster data. Both paths end with a single batched draw call.
+
+--------------------------------------------------------------------------------
+  PATH A — Full Compaction Path  (Nanite clusters enabled on all proxies)
+--------------------------------------------------------------------------------
+
+PHASE 0: Per-proxy  —  Cull, Compact, Prepare indirect args
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  ClusterCulling.usf                                                     │
+  │    For each cluster (one thread per cluster):                           │
+  │      Test bounding sphere against 6 frustum planes → cull if outside   │
+  │      If visible, walk up the parent chain:                              │
+  │        projectedError = parentError / distToCamera * screenHeight       │
+  │        Apply LOD bias (exponential)                                     │
+  │        If error < threshold → select this parent as the LOD level       │
+  │        Else → use the leaf cluster (full detail)                        │
+  │      Write result bit into ClusterVisibilityBitmap                      │
+  │      Write LOD cluster reference into LODClusterBuffer                  │
+  └─────────────────────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  CompactSplats.usf                                                      │
+  │    For each splat (one thread per splat):                               │
+  │      Check if splat's cluster is visible AND at the selected LOD level  │
+  │      If yes → atomically append splat index to CompactedSplatIndices[]  │
+  │    Writes final visible count to VisibleSplatCountBuffer                │
+  │    Result: tight array of only the splats that need rendering           │
+  │    (Can reduce work by ~100x at coarse LOD levels)                      │
+  └─────────────────────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  PrepareIndirectArgs.usf                                                │
+  │    Reads VisibleSplatCount, writes GPU indirect dispatch arguments      │
+  │    So all subsequent passes dispatch exactly the right thread count     │
+  │    without any CPU readback stall                                       │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+PHASE 1: Global  —  Prefix sum across all proxies
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  GlobalAccumulatorPrefixSum.usf                                         │
+  │    Reads each proxy's VisibleSplatCount into a global array             │
+  │    Computes exclusive prefix sums:                                      │
+  │      GlobalBaseOffset[i] = sum of visible counts from proxies 0..i-1   │
+  │    Proxy i writes its CalcViewData output starting at BaseOffset[i]    │
+  │    Also writes final global indirect dispatch + draw arguments:         │
+  │      GlobalCalcDistIndirectArgs   = { ceil(TotalVisible/256), 1, 1 }   │
+  │      GlobalSortIndirectArgs       = { ceil(TotalVisible/1024), 1, 1 }  │
+  │      GlobalDrawIndirectArgs       = { 6, TotalVisible, 0, 0, 0 }       │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+PHASE 2: Per-proxy  —  Compute screen-space view data (indirect dispatch)
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  CalcViewData.usf                                                       │
+  │    For each VISIBLE splat only (uses IndirectDispatchArgs from Phase 0) │
+  │      Decode packed splat: position, quaternion, log-scales, color       │
+  │      Evaluate spherical harmonics for view-dependent color              │
+  │      Project 3D covariance to 2D screen-space covariance matrix        │
+  │      Eigendecompose 2D covariance → two axis vectors + radii           │
+  │      Compute clip-space position                                        │
+  │      Write to GlobalViewDataBuffer at [BaseOffset[proxyIdx] + localIdx]│
+  └─────────────────────────────────────────────────────────────────────────┘
+
+PHASE 3: Global single dispatch  —  Sort all visible splats back-to-front
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  CalcDistances.usf  (indirect dispatch)                                 │
+  │    For each visible splat:                                              │
+  │      Extract depth from clip-space W                                    │
+  │      Convert to sortable uint32 (bit-twiddled for correct float order) │
+  └─────────────────────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  RadixSort.usf  (indirect dispatch, 4 passes of 8-bit LSD radix sort)  │
+  │    Pass N (for bits [N*8 .. N*8+7]):                                    │
+  │      CountCS   — each tile histograms its 256 digit buckets            │
+  │      PrefixSumCS — scan histogram to get per-digit start offsets        │
+  │      ScatterCS — redistribute keys+values into sorted order            │
+  │    After 4 passes: GlobalSortKeysBuffer is sorted back-to-front        │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+  PATH B — Non-Compaction Path  (fallback or Nanite disabled)
+--------------------------------------------------------------------------------
+
+  Per-proxy: (optional) ClusterCulling + CalcViewData (direct dispatch, all splats)
+  Global:    CalcDistances + RadixSort on total splat count
+  No compaction step — all splats (including culled clusters) go through sort
+
+  (Same draw call at the end)
+
+--------------------------------------------------------------------------------
+  DRAW CALL  —  Both paths merge here
+--------------------------------------------------------------------------------
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  GaussianSplatRendering.usf  —  Vertex Shader (MainVS)                 │
+  │    Single instanced draw call (6 vertices per splat = 2 triangles)     │
+  │    InstanceId → SortKeysBuffer[InstanceId] → sorted splat index        │
+  │    VertexId → quad corner offset (-1/-1 to +1/+1)                      │
+  │                                                                         │
+  │    Quad expansion:                                                      │
+  │      Read screen-space axes (Axis1, Axis2) from GlobalViewDataBuffer   │
+  │      NDC position = ClipPos.xy/w + corner.x*Axis1 + corner.y*Axis2    │
+  │      Size of quad covers the 2D Gaussian footprint exactly             │
+  │                                                                         │
+  │    Output: NDC position, local quad coords, color, world position      │
+  └─────────────────────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  GaussianSplatRendering.usf  —  Pixel Shader (MainPS)                  │
+  │                                                                         │
+  │    Gaussian alpha:                                                      │
+  │      distSq = dot(LocalPos, LocalPos)                                  │
+  │      alpha  = saturate(exp(-4 * distSq) * splat.opacity)               │
+  │      Discard if alpha < 1/255                                           │
+  │                                                                         │
+  │    Pre-multiplied alpha output:                                         │
+  │      RT0.rgb = color.rgb * color.a   (SceneColor, additive blend)      │
+  │      RT0.a   = color.a                                                  │
+  │                                                                         │
+  │    Velocity (for TAA/TSR):                                              │
+  │      Reproject world position through previous frame's matrices         │
+  │      Strip TAA jitter from both current and previous NDC positions      │
+  │      RT1 = EncodeVelocityToTexture(currentNDC - prevNDC)               │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  Blend state (RT0 SceneColor):
+    Blend: ONE * src + INVERSE_SRC_ALPHA * dst   (pre-multiplied alpha)
+    Depth: DepthNearOrEqual, write enabled
+           (splats composite over opaque geometry correctly)
+
+
+--------------------------------------------------------------------------------
+  STAGE 5 — POST-PROCESS  (UE handles this)
+--------------------------------------------------------------------------------
+
+  The splat result is now in SceneColor + the velocity buffer.
+  UE's standard post-process stack takes over:
+    - TSR / TAA uses velocity buffer for temporal accumulation
+    - Bloom, tone-mapping, lens flare, etc. apply on top
+  The splats look like any other rendered geometry at this point.
+
+
+--------------------------------------------------------------------------------
+  PERFORMANCE OPTIMIZATIONS SUMMARY
+--------------------------------------------------------------------------------
+
+  Nanite-style LOD Clusters
+    Splats are pre-organized into a hierarchy. Each parent level holds a
+    down-sampled representation of its children. Fine detail is shown only
+    when the cluster is large on screen.
+
+  Screen-Space Error LOD Selection  (ClusterCulling.usf)
+    LOD level is chosen so projected error stays below a pixel threshold.
+    Resolution- and FOV-independent: automatically adapts to any screen size.
+
+  Frustum Culling  (ClusterCulling.usf)
+    Entire clusters are tested against the view frustum. Clusters behind or
+    outside the camera are skipped before any per-splat work begins.
+
+  Splat Compaction  (CompactSplats.usf)
+    Only splats belonging to visible, selected-LOD clusters are kept.
+    Removes the need to process culled splats in later stages.
+    At coarse LOD levels this can be a 100x+ reduction in GPU work.
+
+  GPU-Driven Indirect Dispatch
+    Visible splat counts stay on the GPU. PrepareIndirectArgs writes exact
+    thread group counts into a buffer; all subsequent passes dispatch
+    indirectly from that buffer. No CPU stall waiting for counts.
+
+  Global Accumulator + Single Draw Call
+    All proxies share one contiguous GPU buffer. A prefix sum assigns each
+    proxy its write slot. The result is one draw call for all Gaussian splats
+    in the scene regardless of how many components are active.
+
+  GPU Radix Sort
+    Back-to-front order is required for correct alpha blending. A 4-pass
+    8-bit LSD radix sort runs entirely on GPU with no CPU involvement.
+
+  Camera-Static Skip Cache
+    If the camera and all proxy states are unchanged, the entire compute
+    pipeline (culling, view data, sort) is skipped and the previous draw is
+    reissued. Zero GPU compute overhead on a static camera.
+
+  Shared Render Data
+    Multiple components referencing the same asset share one set of static
+    GPU buffers. Placing the same capture multiple times costs nothing extra
+    in VRAM for the splat data itself.
