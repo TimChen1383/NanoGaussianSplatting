@@ -2,7 +2,7 @@
 
 #include "GaussianSplatAssetFactory.h"
 #include "GaussianSplatAsset.h"
-#include "PLYFileReader.h"  // Now in Runtime module (GaussianSplatting/Public/)
+#include "PLYFileReader.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
