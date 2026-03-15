@@ -2,10 +2,7 @@
 [To Do list]
 - Demo - 野柳(FPV style) + llama + sky的ply + ocean
 - add slicer.py to GitHub
-- keep plugin on repo only > release
-
-
-- do a llama demo and add to github page
+- release
 
 
 
