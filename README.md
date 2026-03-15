@@ -45,10 +45,9 @@ This project primarily aims to solve this issue though dynamic streaming methods
 <img width="927" height="475" alt="GaussianSplatActorAssign" src="https://github.com/user-attachments/assets/00083594-29b4-4706-90ce-af19e6ff6ba7" />
 
 ## Debug Console Command
-- `gs.ShowClusterBounds 0`: disable Nanite cluster preview.
-- `gs.ShowClusterBounds 1`: enable Nanite cluster preview.
-- `gs.DebugForceLODLevel ?`: force render a specific LOD cluster for debugging purpose (can be 1,2,3,4...).
-- `gs.LODErrorThreshold ?`: adjust the threshold of screen space error (8-128). Low density asset work better with lower threshold
-- `gs.MaxRenderBudget ?`: Limit the max number of visible splats(after culling) for saving VRAM. By default there is no limitaion. Set the max cap to decrease the VRAM usage (ex:3,000,000). The culling will start from the splats that is far from the camera. 
+- `gs.ShowClusterBounds 0`: disable Nanite cluster preview
+- `gs.ShowClusterBounds 1`: enable Nanite cluster preview
+- `gs.DebugForceLODLevel ?`: force render a specific LOD cluster for debugging purpose (can be 1,2,3,4...)
+- `gs.MaxRenderBudget ?`: Limit the max number of visible splats(after culling) for saving VRAM. By default there is no limitaion. Set the max cap to decrease the VRAM usage (ex:3,000,000). The culling will start from the splats that is far from the camera
 
 
