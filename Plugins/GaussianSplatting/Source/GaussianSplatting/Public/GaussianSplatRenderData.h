@@ -5,14 +5,16 @@
 #include "CoreMinimal.h"
 #include "GaussianDataTypes.h"
 #include "GaussianClusterTypes.h"
+#include "RHI.h"
+#include "RHIResources.h"
 
 class UGaussianSplatAsset;
 
 /**
  * Shared render data for a Gaussian Splat asset.
- * Holds CPU-side cached data that is loaded once per asset and shared
- * across all FGaussianSplatGPUResources instances referencing the same asset.
- * This avoids repeated bulk data reads and splat packing when duplicating actors.
+ * Holds CPU-side cached data and shared GPU buffers that are created once
+ * per asset and shared across all FGaussianSplatGPUResources instances
+ * referencing the same asset.
  */
 class FGaussianSplatRenderData
 {
@@ -20,35 +22,49 @@ public:
 	FGaussianSplatRenderData();
 	~FGaussianSplatRenderData();
 
-	/** Initialize from asset data. Only runs once (guarded by bIsInitialized). */
+	/** Initialize CPU-side data from asset. Only runs once (guarded by bIsInitialized). */
 	void Initialize(UGaussianSplatAsset* Asset);
 
-	/** Whether this render data has been initialized */
+	/** Create shared GPU buffers. Thread-safe, only runs once. Must be called on render thread. */
+	void CreateGPUBuffers(FRHICommandListBase& RHICmdList);
+
+	/** Release shared GPU buffers. */
+	void ReleaseGPUBuffers();
+
+	/** Whether CPU-side data has been initialized */
 	bool IsInitialized() const { return bIsInitialized; }
+
+	/** Whether GPU buffers have been created */
+	bool AreGPUBuffersCreated() const { return bGPUBuffersCreated; }
 
 	/** Get asset name for logging */
 	const FString& GetAssetName() const { return AssetName; }
 
 public:
-	// ---- Cached CPU-side data (loaded once from asset) ----
+	// ---- Shared GPU buffers (created once, shared across all proxies) ----
 
-	/** Packed splat data (16 bytes/splat: float16 pos + octahedral quat + log scale + RGBA) */
-	TArray<uint8> PackedSplatData;
+	/** Packed splat data buffer (16 bytes/splat) */
+	FBufferRHIRef PackedSplatBuffer;
+	FShaderResourceViewRHIRef PackedSplatBufferSRV;
 
-	/** Spherical harmonics data */
-	TArray<uint8> SHData;
+	/** Spherical harmonics buffer */
+	FBufferRHIRef SHBuffer;
+	FShaderResourceViewRHIRef SHBufferSRV;
 
-	/** Chunk quantization info */
-	TArray<FGaussianChunkInfo> ChunkData;
+	/** Chunk info buffer */
+	FBufferRHIRef ChunkBuffer;
+	FShaderResourceViewRHIRef ChunkBufferSRV;
 
-	/** Cluster hierarchy data (GPU format) */
-	TArray<FGaussianGPUCluster> ClusterData;
+	/** Index buffer for quad rendering */
+	FBufferRHIRef IndexBuffer;
 
-	/** Splat-to-cluster index mapping */
-	TArray<uint32> SplatClusterIndices;
+	/** Cluster data buffer (static, loaded from asset) */
+	FBufferRHIRef ClusterBuffer;
+	FShaderResourceViewRHIRef ClusterBufferSRV;
 
-	/** LOD splat-to-cluster index mapping */
-	TArray<uint32> LODSplatClusterIndices;
+	/** Splat-to-cluster index buffer (static, loaded from asset) */
+	FBufferRHIRef SplatClusterIndexBuffer;
+	FShaderResourceViewRHIRef SplatClusterIndexBufferSRV;
 
 	// ---- Metadata ----
 
@@ -63,7 +79,17 @@ public:
 	EGaussianPositionFormat PositionFormat = EGaussianPositionFormat::Float32;
 
 private:
+	// ---- CPU-side cached data (freed after GPU upload) ----
+
+	TArray<uint8> PackedSplatData;
+	TArray<uint8> SHData;
+	TArray<FGaussianChunkInfo> CachedChunkData;
+	TArray<FGaussianGPUCluster> CachedClusterData;
+	TArray<uint32> CachedSplatClusterIndices;
+
 	bool bIsInitialized = false;
+	bool bGPUBuffersCreated = false;
 	FString AssetName;
 	FCriticalSection InitLock;
+	FCriticalSection GPUInitLock;
 };

@@ -33,7 +33,7 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	}
 
 	// Get or create shared render data (CPU-side cached data, loaded once per asset)
-	TSharedPtr<FGaussianSplatRenderData> SharedData = Asset->GetOrCreateRenderData();
+	SharedData = Asset->GetOrCreateRenderData();
 	if (!SharedData.IsValid() || !SharedData->IsInitialized())
 	{
 		return;
@@ -50,14 +50,6 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	LODSplatCount = SharedData->LODSplatCount;
 	bHasLODSplats = SharedData->bHasLODSplats;
 
-	// Copy cached data from shared render data for GPU upload
-	CachedPackedSplatData = SharedData->PackedSplatData;
-	CachedChunkData = SharedData->ChunkData;
-	CachedSHData = SharedData->SHData;
-	CachedClusterData = SharedData->ClusterData;
-	CachedSplatClusterIndices = SharedData->SplatClusterIndices;
-	CachedLODSplatClusterIndices = SharedData->LODSplatClusterIndices;
-
 	// Initialize render resource
 	if (!bInitialized)
 	{
@@ -68,35 +60,66 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 
 void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 {
-	if (SplatCount <= 0)
+	if (SplatCount <= 0 || !SharedData.IsValid())
 	{
 		return;
 	}
 
-	CreateStaticBuffers(RHICmdList);
+	// Create shared GPU buffers (only runs once per asset, thread-safe)
+	SharedData->CreateGPUBuffers(RHICmdList);
 
-	// TotalSplatCount is needed by CreateClusterBuffers (compaction buffer sizing).
+	// Copy shared GPU buffer refs (just ref-count increments, no GPU allocation)
+	PackedSplatBuffer = SharedData->PackedSplatBuffer;
+	PackedSplatBufferSRV = SharedData->PackedSplatBufferSRV;
+	SHBuffer = SharedData->SHBuffer;
+	SHBufferSRV = SharedData->SHBufferSRV;
+	ChunkBuffer = SharedData->ChunkBuffer;
+	ChunkBufferSRV = SharedData->ChunkBufferSRV;
+	IndexBuffer = SharedData->IndexBuffer;
+	ClusterBuffer = SharedData->ClusterBuffer;
+	ClusterBufferSRV = SharedData->ClusterBufferSRV;
+	SplatClusterIndexBuffer = SharedData->SplatClusterIndexBuffer;
+	SplatClusterIndexBufferSRV = SharedData->SplatClusterIndexBufferSRV;
+
+	// TotalSplatCount is needed by per-instance buffer sizing
 	TotalSplatCount = SplatCount;
 
-	// NOTE: Per-proxy dynamic buffers (ViewData, sort, histogram) are NOT created here.
-	// The global accumulator owns all working buffers, saving ~49 MB per proxy.
+	// Create dummy white texture (tiny, per-proxy is fine)
+	CreateDummyWhiteTexture(RHICmdList);
 
-	CreateIndexBuffer(RHICmdList);
-	CreateClusterBuffers(RHICmdList);
+	// Create per-instance buffers (cluster visibility, compaction, sort args, etc.)
+	CreatePerInstanceBuffers(RHICmdList);
+
+	int32 PerInstanceBufferCount = 0;
+	if (bSupportsCompaction) PerInstanceBufferCount += 15; // cluster/compaction/sort buffers
+	if (bSupportsIndirectDraw) PerInstanceBufferCount += 1;
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created %d per-instance buffers (shared data: %s)"),
+		PerInstanceBufferCount, *SharedData->GetAssetName());
 }
 
 void FGaussianSplatGPUResources::ReleaseRHI()
 {
+	// Release shared buffer refs (just ref-count decrements, actual GPU memory
+	// is freed when SharedData releases its refs)
 	PackedSplatBuffer.SafeRelease();
 	PackedSplatBufferSRV.SafeRelease();
-	PositionBuffer.SafeRelease();
-	PositionBufferSRV.SafeRelease();
-	OtherDataBuffer.SafeRelease();
-	OtherDataBufferSRV.SafeRelease();
 	SHBuffer.SafeRelease();
 	SHBufferSRV.SafeRelease();
 	ChunkBuffer.SafeRelease();
 	ChunkBufferSRV.SafeRelease();
+	IndexBuffer.SafeRelease();
+	ClusterBuffer.SafeRelease();
+	ClusterBufferSRV.SafeRelease();
+	SplatClusterIndexBuffer.SafeRelease();
+	SplatClusterIndexBufferSRV.SafeRelease();
+
+	// Release legacy buffers
+	PositionBuffer.SafeRelease();
+	PositionBufferSRV.SafeRelease();
+	OtherDataBuffer.SafeRelease();
+	OtherDataBufferSRV.SafeRelease();
+
+	// Release per-instance buffers
 	ViewDataBuffer.SafeRelease();
 	ViewDataBufferUAV.SafeRelease();
 	ViewDataBufferSRV.SafeRelease();
@@ -120,15 +143,10 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	SortParamsBuffer.SafeRelease();
 	SortParamsBufferUAV.SafeRelease();
 	SortParamsBufferSRV.SafeRelease();
-	IndexBuffer.SafeRelease();
 	ColorTexture.SafeRelease();
 	ColorTextureSRV.SafeRelease();
 	DummyWhiteTexture.SafeRelease();
 	DummyWhiteTextureSRV.SafeRelease();
-
-	// Release cluster buffers
-	ClusterBuffer.SafeRelease();
-	ClusterBufferSRV.SafeRelease();
 	VisibleClusterBuffer.SafeRelease();
 	VisibleClusterBufferUAV.SafeRelease();
 	VisibleClusterBufferSRV.SafeRelease();
@@ -145,8 +163,6 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	IndirectDrawArgsBufferUAV.SafeRelease();
 
 	// Release cluster visibility integration buffers
-	SplatClusterIndexBuffer.SafeRelease();
-	SplatClusterIndexBufferSRV.SafeRelease();
 	ClusterVisibilityBitmap.SafeRelease();
 	ClusterVisibilityBitmapUAV.SafeRelease();
 	ClusterVisibilityBitmapSRV.SafeRelease();
@@ -185,268 +201,10 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	IndirectDispatchArgsBuffer.SafeRelease();
 	IndirectDispatchArgsBufferUAV.SafeRelease();
 
+	// Release shared data reference
+	SharedData.Reset();
+
 	bInitialized = false;
-}
-
-void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmdList)
-{
-	// Packed splat buffer (16 bytes/splat): replaces PositionBuffer + OtherDataBuffer + ColorTexture
-	if (CachedPackedSplatData.Num() > 0)
-	{
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianPackedSplatBuffer"),
-			CachedPackedSplatData.Num(),
-			0,
-			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		PackedSplatBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(PackedSplatBuffer, 0, CachedPackedSplatData.Num(), RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedPackedSplatData.GetData(), CachedPackedSplatData.Num());
-		RHICmdList.UnlockBuffer(PackedSplatBuffer);
-
-		PackedSplatBufferSRV = RHICmdList.CreateShaderResourceView(
-			PackedSplatBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Raw));
-	}
-
-	// SH buffer for view-dependent rendering (f_rest coefficients)
-	// Always create at least a dummy buffer for shader binding
-	{
-		uint32 SHDataSize = CachedSHData.Num();
-		if (SHDataSize == 0)
-		{
-			SHDataSize = 16;  // Create small dummy buffer
-		}
-
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSHBuffer"),
-			SHDataSize,
-			0,
-			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		SHBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(SHBuffer, 0, SHDataSize, RLM_WriteOnly);
-		if (CachedSHData.Num() > 0)
-		{
-			FMemory::Memcpy(Data, CachedSHData.GetData(), CachedSHData.Num());
-		}
-		else
-		{
-			FMemory::Memzero(Data, SHDataSize);  // Zero-initialize dummy
-		}
-		RHICmdList.UnlockBuffer(SHBuffer);
-
-		SHBufferSRV = RHICmdList.CreateShaderResourceView(
-			SHBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Raw));
-
-		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created SH buffer (%u bytes, bands=%d)"),
-			SHDataSize, SHBands);
-	}
-
-	// Chunk buffer - Always create at least a dummy buffer for shader binding
-	{
-		uint32 ChunkCount = CachedChunkData.Num();
-		if (ChunkCount == 0)
-		{
-			ChunkCount = 1;  // Create dummy entry
-		}
-
-		const uint32 ChunkSize = ChunkCount * sizeof(FGaussianChunkInfo);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianChunkBuffer"),
-			ChunkSize,
-			sizeof(FGaussianChunkInfo),
-			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		ChunkBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(ChunkBuffer, 0, ChunkSize, RLM_WriteOnly);
-		if (CachedChunkData.Num() > 0)
-		{
-			FMemory::Memcpy(Data, CachedChunkData.GetData(), ChunkSize);
-		}
-		else
-		{
-			FMemory::Memzero(Data, ChunkSize);  // Zero-initialize dummy entry
-		}
-		RHICmdList.UnlockBuffer(ChunkBuffer);
-
-		ChunkBufferSRV = RHICmdList.CreateShaderResourceView(
-			ChunkBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(FGaussianChunkInfo)));
-	}
-
-	// Clear cached data
-	CachedPackedSplatData.Empty();
-	CachedPositionData.Empty();
-	CachedOtherData.Empty();
-	CachedSHData.Empty();
-	CachedChunkData.Empty();
-}
-
-void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICmdList)
-{
-	// Pad to power of 2 for bitonic sort
-	uint32 PaddedCount = FMath::RoundUpToPowerOfTwo(TotalSplatCount);
-
-	// View data buffer (per-frame computed data)
-	// Sized to hold both original splats and LOD splats
-	{
-		const uint32 BufferSize = TotalSplatCount * sizeof(FGaussianSplatViewData);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianViewDataBuffer"),
-			BufferSize,
-			sizeof(FGaussianSplatViewData),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		ViewDataBuffer = RHICmdList.CreateBuffer(Desc);
-
-		ViewDataBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			ViewDataBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(FGaussianSplatViewData)));
-		ViewDataBufferSRV = RHICmdList.CreateShaderResourceView(
-			ViewDataBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(FGaussianSplatViewData)));
-	}
-
-	// Sort distance buffer - sized to PaddedCount for bitonic sort
-	{
-		const uint32 BufferSize = PaddedCount * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSortDistanceBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		SortDistanceBuffer = RHICmdList.CreateBuffer(Desc);
-
-		SortDistanceBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			SortDistanceBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		SortDistanceBufferSRV = RHICmdList.CreateShaderResourceView(
-			SortDistanceBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// Sort keys buffer - sized to PaddedCount for bitonic sort
-	{
-		const uint32 BufferSize = PaddedCount * sizeof(uint32);
-
-		FRHIBufferCreateDesc Desc1 = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSortKeysBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		SortKeysBuffer = RHICmdList.CreateBuffer(Desc1);
-		SortKeysBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			SortKeysBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		SortKeysBufferSRV = RHICmdList.CreateShaderResourceView(
-			SortKeysBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-
-		FRHIBufferCreateDesc Desc2 = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSortKeysBufferAlt"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		SortKeysBufferAlt = RHICmdList.CreateBuffer(Desc2);
-		SortKeysBufferAltUAV = RHICmdList.CreateUnorderedAccessView(
-			SortKeysBufferAlt, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		SortKeysBufferAltSRV = RHICmdList.CreateShaderResourceView(
-			SortKeysBufferAlt, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// Sort distance buffer alt (for radix sort ping-pong)
-	{
-		const uint32 BufferSize = PaddedCount * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSortDistanceBufferAlt"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		SortDistanceBufferAlt = RHICmdList.CreateBuffer(Desc);
-		SortDistanceBufferAltUAV = RHICmdList.CreateUnorderedAccessView(
-			SortDistanceBufferAlt, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// Radix sort histogram buffer: NumTiles * 256 entries
-	{
-		uint32 NumTiles = FMath::DivideAndRoundUp(PaddedCount, 1024u);
-		const uint32 BufferSize = NumTiles * 256 * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianRadixHistogramBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		RadixHistogramBuffer = RHICmdList.CreateBuffer(Desc);
-		RadixHistogramBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			RadixHistogramBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// Radix sort digit offset buffer: 256 entries
-	{
-		const uint32 BufferSize = 256 * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianRadixDigitOffsetBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		RadixDigitOffsetBuffer = RHICmdList.CreateBuffer(Desc);
-		RadixDigitOffsetBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			RadixDigitOffsetBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// NOTE: SortIndirectArgsBuffer and SortParamsBuffer are created in
-	// CreateClusterBuffers() because they're needed by PrepareIndirectArgs
-	// in the Nanite compaction path, even when per-proxy dynamic buffers
-	// are skipped under the global accumulator.
-}
-
-void FGaussianSplatGPUResources::CreateIndexBuffer(FRHICommandListBase& RHICmdList)
-{
-	// 6 indices per quad (2 triangles): 0,1,2, 1,3,2
-	TArray<uint16> Indices = { 0, 1, 2, 1, 3, 2 };
-
-	FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-		TEXT("GaussianSplatIndexBuffer"),
-		Indices.Num() * sizeof(uint16),
-		sizeof(uint16),
-		BUF_Static | BUF_IndexBuffer)
-		.SetInitialState(ERHIAccess::VertexOrIndexBuffer);
-	IndexBuffer = RHICmdList.CreateBuffer(Desc);
-
-	void* Data = RHICmdList.LockBuffer(IndexBuffer, 0, Indices.Num() * sizeof(uint16), RLM_WriteOnly);
-	FMemory::Memcpy(Data, Indices.GetData(), Indices.Num() * sizeof(uint16));
-	RHICmdList.UnlockBuffer(IndexBuffer);
-
-	// Create dummy white texture for fallback when ColorTexture isn't available
-	CreateDummyWhiteTexture(RHICmdList);
 }
 
 void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList)
@@ -471,38 +229,11 @@ void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RH
 			.SetDimension(ETextureDimension::Texture2D));
 }
 
-void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICmdList)
+void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& RHICmdList)
 {
-	// When Nanite is disabled (no cluster data), we still need to create dummy buffers
-	// because UE5's shader parameter system requires all SHADER_PARAMETER_SRV to be valid
-	if (!bHasClusterData || CachedClusterData.Num() == 0)
+	// When Nanite is disabled (no cluster data), create dummy buffers for shader binding
+	if (!bHasClusterData)
 	{
-		// Create minimal dummy buffers for non-Nanite assets
-		// These are 1-element buffers that satisfy the shader binding requirements
-		// The shader checks UseClusterCulling == 0 and won't actually read from them
-
-		// Dummy SplatClusterIndexBuffer (1 uint)
-		{
-			const uint32 BufferSize = sizeof(uint32);
-			FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-				TEXT("GaussianSplatClusterIndexBufferDummy"),
-				BufferSize,
-				sizeof(uint32),
-				BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
-				.SetInitialState(ERHIAccess::SRVMask);
-			SplatClusterIndexBuffer = RHICmdList.CreateBuffer(Desc);
-
-			uint32 Zero = 0;
-			void* Data = RHICmdList.LockBuffer(SplatClusterIndexBuffer, 0, BufferSize, RLM_WriteOnly);
-			FMemory::Memcpy(Data, &Zero, BufferSize);
-			RHICmdList.UnlockBuffer(SplatClusterIndexBuffer);
-
-			SplatClusterIndexBufferSRV = RHICmdList.CreateShaderResourceView(
-				SplatClusterIndexBuffer, FRHIViewDesc::CreateBufferSRV()
-					.SetType(FRHIViewDesc::EBufferType::Structured)
-					.SetStride(sizeof(uint32)));
-		}
-
 		// Dummy ClusterVisibilityBitmap (1 uint)
 		{
 			const uint32 BufferSize = sizeof(uint32);
@@ -594,27 +325,6 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 		return;
 	}
 
-	// Create cluster buffer (static, read-only)
-	{
-		const uint32 BufferSize = CachedClusterData.Num() * sizeof(FGaussianGPUCluster);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianClusterBuffer"),
-			BufferSize,
-			sizeof(FGaussianGPUCluster),
-			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		ClusterBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(ClusterBuffer, 0, BufferSize, RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedClusterData.GetData(), BufferSize);
-		RHICmdList.UnlockBuffer(ClusterBuffer);
-
-		ClusterBufferSRV = RHICmdList.CreateShaderResourceView(
-			ClusterBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(FGaussianGPUCluster)));
-	}
-
 	// Create visible cluster buffer (dynamic, written by culling shader)
 	// Size = max possible visible clusters (all clusters could be visible)
 	{
@@ -658,13 +368,6 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(uint32)));
 	}
 
-	// Clear cached cluster data
-	CachedClusterData.Empty();
-
-	// UNIFIED APPROACH: No separate LOD splat buffer needed
-	// LOD splats are stored in the same buffers as original splats (Position, Other, Color)
-	// The SplatClusterIndexBuffer maps all splats to their clusters
-
 	// Create indirect draw argument buffer for GPU-driven rendering
 	// Structure: IndexCountPerInstance(4), InstanceCount(4), StartIndexLocation(4), BaseVertexLocation(4), StartInstanceLocation(4)
 	// Total: 20 bytes, but we use 32 bytes for alignment
@@ -697,31 +400,6 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 		bSupportsIndirectDraw = true;
 		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created indirect draw buffer"));
 	}
-
-	// Create splat-to-cluster index buffer
-	if (CachedSplatClusterIndices.Num() > 0)
-	{
-		const uint32 BufferSize = CachedSplatClusterIndices.Num() * sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianSplatClusterIndexBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		SplatClusterIndexBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(SplatClusterIndexBuffer, 0, BufferSize, RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedSplatClusterIndices.GetData(), BufferSize);
-		RHICmdList.UnlockBuffer(SplatClusterIndexBuffer);
-
-		SplatClusterIndexBufferSRV = RHICmdList.CreateShaderResourceView(
-			SplatClusterIndexBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-
-		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplatGPUResources: Created splat-to-cluster index buffer for %d splats"), CachedSplatClusterIndices.Num());
-	}
-	CachedSplatClusterIndices.Empty();
 
 	// Create cluster visibility bitmap buffer
 	// One bit per cluster, rounded up to uint32 boundary

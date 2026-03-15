@@ -13,6 +13,7 @@
 
 class UGaussianSplatComponent;
 class UGaussianSplatAsset;
+class FGaussianSplatRenderData;
 
 
 /**
@@ -307,43 +308,15 @@ public:
 	int32 GetSHBands() const { return SHBands; }
 
 private:
-	/** Create static buffers from asset data */
-	void CreateStaticBuffers(FRHICommandListBase& RHICmdList);
-
-	/** Create dynamic buffers for per-frame data */
-	void CreateDynamicBuffers(FRHICommandListBase& RHICmdList);
-
-	/** Create index buffer for quad rendering */
-	void CreateIndexBuffer(FRHICommandListBase& RHICmdList);
-
 	/** Create dummy white texture for fallback */
 	void CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList);
 
-	/** Create cluster buffers for Nanite-style culling */
-	void CreateClusterBuffers(FRHICommandListBase& RHICmdList);
+	/** Create per-instance cluster/compaction/sort buffers */
+	void CreatePerInstanceBuffers(FRHICommandListBase& RHICmdList);
 
 private:
-	/** Cached packed splat data (16 bytes/splat, built during Initialize) */
-	TArray<uint8> CachedPackedSplatData;
-
-	/** Cached asset data for initialization (legacy, unused when packed) */
-	TArray<uint8> CachedPositionData;
-	TArray<uint8> CachedOtherData;
-	TArray<uint8> CachedSHData;
-	TArray<FGaussianChunkInfo> CachedChunkData;
-
-	/** Cached cluster data for initialization */
-	TArray<FGaussianGPUCluster> CachedClusterData;
-
-	// NOTE: CachedLODSplatData removed in unified approach.
-	// LOD splats now use the same format as original splats and are appended
-	// to the main buffers (Position, OtherData, ColorTexture) during import.
-
-	/** Cached splat-to-cluster index mapping */
-	TArray<uint32> CachedSplatClusterIndices;
-
-	/** Cached LOD splat-to-cluster index mapping (for GPU-driven LOD rendering) */
-	TArray<uint32> CachedLODSplatClusterIndices;
+	/** Shared render data (holds shared GPU buffers, ref-counted) */
+	TSharedPtr<FGaussianSplatRenderData> SharedData;
 
 	int32 SplatCount = 0;
 	int32 SHBands = 0;  // Number of SH bands stored in SHBuffer (0 = no SH data)
