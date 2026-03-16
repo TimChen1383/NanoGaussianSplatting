@@ -48,7 +48,9 @@ This project primarily aims to solve this issue though dynamic streaming methods
 ## Best Practice
 ![Image](https://github.com/user-attachments/assets/76089944-18a8-4a3d-b6f9-52045a72acb8)
 
-A single big chunk of gaussian splatting file will be very bad for performance optimization. The splats outside the camera view can not be culled. Also, all the splats will be engaged in the sorting process all the time.
+A single big chunk of gaussian splatting file is not conducive to performance optimization. 
+The splats outside the camera view can not be culled. 
+Also, all the splats will be engaged in the sorting process all the time.
 
 The ideal format is slicing a big chunk of gaussian splatting file into smaller pieces.
 For example individual props for cinematic scenes or tiles for geo-spatial data.
