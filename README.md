@@ -45,4 +45,10 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - `gs.DebugForceLODLevel ?`: force render a specific LOD cluster for debugging purpose (can be 1,2,3,4...)
 - `gs.MaxRenderBudget ?`: limit the max number of visible splats(after culling) for saving VRAM. By default there is no limitaion(0). Set the max cap to decrease the VRAM usage (ex:3,000,000). The culling will start from the splats which are far from the camera
 
+## Best Practice
+![Image](https://github.com/user-attachments/assets/76089944-18a8-4a3d-b6f9-52045a72acb8)
 
+A single big chunk of gaussian splatting file will be very bad for performance optimization. The splats outside the camera view can not be culled. Also, all the splats will be engaged in the sorting process all the time.
+
+The ideal format is slicing a big chunk of gaussian splatting file into smaller pieces.
+For example individual props for cinematic scenes or tiles for geo-spatial data.
