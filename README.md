@@ -8,7 +8,8 @@ Supported Unreal Engine version: UE5.6+
 Loading and rendering highly detailed large scale assets in 3D software is always a big challenge.
 Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
 However, currently there isn't any solution for handling high density/large scale gaussian splats.
-This project primarily aims to solve this issue though dynamic streaming methods.
+
+This project primarily aims to solve this issue. though dynamic streaming methods.
 
 
 ## How To Use It
@@ -31,7 +32,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 | Category | Variable | Description |
 | :--- | :--- | :--- |
-| Quality | SH Order | sphere harmonics order |
+| Quality | SH Order | sphere harmonics quality |
 | Performance | Sort Every Nth Frame | adjust gaussian splats sorting speed |
 | Performance | Enable Frustum Culling | enable/disable frustum culling |
 | Performance | LOD Error Threshold | LOD cluster switching sensitivity |
