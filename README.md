@@ -9,7 +9,7 @@ Loading and rendering highly detailed large scale assets in 3D software is alway
 Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
 However, currently there isn't any solution for handling high density/large scale gaussian splats.
 
-This project primarily aims to solve this issue. though dynamic streaming methods.
+This project primarily aims to solve this issue though dynamic streaming methods.
 
 
 ## How To Use It
@@ -36,13 +36,13 @@ This project primarily aims to solve this issue. though dynamic streaming method
 | Performance | Sort Every Nth Frame | adjust gaussian splats sorting speed |
 | Performance | Enable Frustum Culling | enable/disable frustum culling |
 | Performance | LOD Error Threshold | LOD cluster switching sensitivity |
-| Rendering | Opacity Scale | adjuct the opacity of gaussian splats|
-| Rendering | Splat Scale | adjuct the scale of gaussian splats|
+| Rendering | Opacity Scale | adjust the opacity of gaussian splats|
+| Rendering | Splat Scale | adjust the scale of gaussian splats|
 
 
 ## Debug Console Command
 - `gs.ShowClusterBounds 1`: enable Nanite cluster preview (set to 0 to disable preview)
 - `gs.DebugForceLODLevel ?`: force render a specific LOD cluster for debugging purpose (can be 1,2,3,4...)
-- `gs.MaxRenderBudget ?`: Limit the max number of visible splats(after culling) for saving VRAM. By default there is no limitaion(0). Set the max cap to decrease the VRAM usage (ex:3,000,000). The culling will start from the splats that is far from the camera
+- `gs.MaxRenderBudget ?`: limit the max number of visible splats(after culling) for saving VRAM. By default there is no limitaion(0). Set the max cap to decrease the VRAM usage (ex:3,000,000). The culling will start from the splats which are far from the camera
 
 
