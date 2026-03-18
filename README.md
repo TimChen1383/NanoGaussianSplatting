@@ -1,4 +1,4 @@
-# UEGaussianSplatting
+# Nano Gaussian Splatting
 
 ![Image](https://github.com/user-attachments/assets/83ae3ba1-9414-4cb5-8703-19a15abddd21)
 
