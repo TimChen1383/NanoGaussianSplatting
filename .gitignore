@@ -1,6 +1,8 @@
 ### Unreal ###
 Saved/
 Content/
+Source/
+Binaries/
 Config/
 DerivedDataCache/
 .vs/
@@ -8,6 +10,7 @@ Intermediate/
 .vsconfig
 UnityGaussianSplatting/
 GSTest.uproject
+GSTest.sln
 
 ### claude ###
 .claude/

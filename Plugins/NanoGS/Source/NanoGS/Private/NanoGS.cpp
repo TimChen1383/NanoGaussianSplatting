@@ -18,6 +18,13 @@
 
 #define LOCTEXT_NAMESPACE "FNanoGSModule"
 
+// Pass 2 parameter struct: declares IntermediateTexture as an RDG-tracked shader resource
+// so that RDG inserts the proper RTV→SRV barrier between Pass 1 (write) and Pass 2 (read).
+BEGIN_SHADER_PARAMETER_STRUCT(FGaussianCompositePassParameters, )
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, IntermediateTexture)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
 //----------------------------------------------------------------------
 // Console Variables for Gaussian Splatting
 //----------------------------------------------------------------------
@@ -592,8 +599,14 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 		);
 
 		// Pass 2: Composite intermediate sRGB RT onto SceneColor (sRGB → linear conversion)
+		// Use FGaussianCompositePassParameters to declare IntermediateTexture as an RDG-tracked
+		// shader resource input. This ensures RDG inserts the required RTV→SRV resource barrier
+		// between Pass 1 (which writes IntermediateTexture as a render target) and this pass
+		// (which reads it as a shader resource). Without this, the GPU may read stale/partial
+		// data from IntermediateTexture, producing rectangular block artifacts.
 		ERenderTargetLoadAction CompositeColorLoadAction = (DebugMode > 0) ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
-		FRenderTargetParameters* Pass2Parameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
+		FGaussianCompositePassParameters* Pass2Parameters = GraphBuilder.AllocParameters<FGaussianCompositePassParameters>();
+		Pass2Parameters->IntermediateTexture = IntermediateTexture;
 		Pass2Parameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, CompositeColorLoadAction);
 
 		GraphBuilder.AddPass(
