@@ -132,6 +132,7 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 
 	FRDGTexture* ColorTexture = Parameters.ColorTexture;
 	FRDGTexture* DepthTexture = Parameters.DepthTexture;
+	FRDGTexture* VelocityTexture = Parameters.VelocityTexture;
 	if (!ColorTexture)
 	{
 		return;
@@ -152,10 +153,11 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 	// Pass 1: Render splats to intermediate RT (sRGB blending)
 	FRenderTargetParameters* Pass1Parameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
 	Pass1Parameters->RenderTargets[0] = FRenderTargetBinding(IntermediateTexture, ERenderTargetLoadAction::EClear);
-	// No velocity RT binding — TSR/TAA computes velocity from depth reprojection.
-	// Gaussian splats are static in world space, so depth-based reprojection is correct.
-	// Writing explicit velocity was incorrect: the per-pixel SV_Position vs splat-center
-	// world position mismatch produced radial velocity artifacts.
+	// Bind velocity texture for TAA/TSR motion vector output
+	if (VelocityTexture)
+	{
+		Pass1Parameters->RenderTargets[1] = FRenderTargetBinding(VelocityTexture, ERenderTargetLoadAction::ELoad);
+	}
 	if (DepthTexture)
 	{
 		// Enable depth writes so TSR/TAA can properly detect disocclusion

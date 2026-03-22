@@ -108,6 +108,7 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 		Parameters.OriginalSplatCount = SplatCount;
 	}
 
+	// Cast to FViewInfo to access PrevViewInfo for velocity calculation
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 
 	// Matrices
@@ -517,12 +518,17 @@ void FGaussianSplatRenderer::DrawSplats(
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
 
-	// Premultiplied alpha "over" for back-to-front compositing in sRGB space
+	// Blend mode for MRT:
+	// RT0 (Color): Premultiplied alpha "over" for back-to-front compositing in sRGB space
 	//   result = src + dst * (1 - srcAlpha)
 	//   Using CW_RGBA: splats render to intermediate sRGB RT which needs alpha tracking.
 	//   The composite pass later converts sRGB→linear and writes to SceneColor with CW_RGB.
+	// RT1 (Velocity): Simple replacement - velocity values should not be blended
 	GraphicsPSOInit.BlendState = TStaticBlendState<
-		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha
+		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
+		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
 
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
@@ -557,8 +563,23 @@ void FGaussianSplatRenderer::DrawSplats(
 
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
-	// Pixel shader has no parameters (velocity removed — TSR computes from depth)
+	// Pixel shader parameters
 	FGaussianSplatPS::FParameters PSParameters;
+	// Velocity calculation (Nanite-style): use previous frame's translated view-projection matrix
+	PSParameters.PrevTranslatedWorldToClip = FMatrix44f(ViewInfo.PrevViewInfo.ViewMatrices.GetTranslatedViewProjectionMatrix());
+	// Pass screen size inverse for NDC conversion (avoids View uniform buffer binding)
+	PSParameters.ScreenSizeInverse = FVector2f(1.0f / ViewRect.Width(), 1.0f / ViewRect.Height());
+	// TAA jitter: xy = current frame, zw = previous frame (in NDC space)
+	PSParameters.TemporalAAJitter = FVector4f(
+		View.ViewMatrices.GetTemporalAAJitter().X,
+		View.ViewMatrices.GetTemporalAAJitter().Y,
+		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().X,
+		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().Y
+	);
+	// PreViewTranslation for converting TranslatedWorld back to World
+	PSParameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
+	// Previous frame's PreViewTranslation for correct velocity calculation
+	PSParameters.PrevPreViewTranslation = FVector3f(ViewInfo.PrevViewInfo.ViewMatrices.GetPreViewTranslation());
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	// Draw instanced quads
@@ -732,6 +753,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.UseCompaction = 1;
 	Parameters.VisibleSplatCount = SplatCount;
 
+	// Cast to FViewInfo to access PrevViewInfo for velocity calculation
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 
 	// Matrices
@@ -874,6 +896,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.UseCompaction = 0;
 	Parameters.VisibleSplatCount = 0;
 
+	// Cast to FViewInfo to access PrevViewInfo for velocity calculation
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 
 	// Transform matrices
@@ -1123,10 +1146,13 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	// Enable depth writes for TSR/TAA - splats write depth at their center position
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
-	// Premultiplied alpha "over" for back-to-front compositing in sRGB space
+	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
 	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
 	GraphicsPSOInit.BlendState = TStaticBlendState<
-		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha
+		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
+		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GEmptyVertexDeclaration.VertexDeclarationRHI;
@@ -1152,6 +1178,21 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
 	FGaussianSplatPS::FParameters PSParameters;
+	// Velocity calculation (Nanite-style): use previous frame's translated view-projection matrix
+	PSParameters.PrevTranslatedWorldToClip = FMatrix44f(ViewInfo.PrevViewInfo.ViewMatrices.GetTranslatedViewProjectionMatrix());
+	// Pass screen size inverse for NDC conversion (avoids View uniform buffer binding)
+	PSParameters.ScreenSizeInverse = FVector2f(1.0f / ViewRect.Width(), 1.0f / ViewRect.Height());
+	// TAA jitter: xy = current frame, zw = previous frame (in NDC space)
+	PSParameters.TemporalAAJitter = FVector4f(
+		View.ViewMatrices.GetTemporalAAJitter().X,
+		View.ViewMatrices.GetTemporalAAJitter().Y,
+		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().X,
+		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().Y
+	);
+	// PreViewTranslation for converting TranslatedWorld back to World
+	PSParameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
+	// Previous frame's PreViewTranslation for correct velocity calculation
+	PSParameters.PrevPreViewTranslation = FVector3f(ViewInfo.PrevViewInfo.ViewMatrices.GetPreViewTranslation());
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	RHICmdList.SetStreamSource(0, nullptr, 0);
@@ -1309,6 +1350,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.GlobalBaseOffset          = 0;
 	Parameters.MaxRenderBudget           = MaxRenderBudget;
 
+	// Cast to FViewInfo to access PrevViewInfo for velocity calculation
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
 
 	// Transform matrices
@@ -1543,10 +1585,13 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	// Enable depth writes for TSR/TAA - splats write depth at their center position
 	// Using DepthNearOrEqual allows splats at similar depths to all blend correctly
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
-	// Premultiplied alpha "over" for back-to-front compositing in sRGB space
+	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
 	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
 	GraphicsPSOInit.BlendState = TStaticBlendState<
-		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha
+		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
+		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GEmptyVertexDeclaration.VertexDeclarationRHI;
@@ -1574,6 +1619,21 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
 	FGaussianSplatPS::FParameters PSParameters;
+	// Velocity calculation (Nanite-style): use previous frame's translated view-projection matrix
+	PSParameters.PrevTranslatedWorldToClip = FMatrix44f(ViewInfo.PrevViewInfo.ViewMatrices.GetTranslatedViewProjectionMatrix());
+	// Pass screen size inverse for NDC conversion (avoids View uniform buffer binding)
+	PSParameters.ScreenSizeInverse = FVector2f(1.0f / ViewRect.Width(), 1.0f / ViewRect.Height());
+	// TAA jitter: xy = current frame, zw = previous frame (in NDC space)
+	PSParameters.TemporalAAJitter = FVector4f(
+		View.ViewMatrices.GetTemporalAAJitter().X,
+		View.ViewMatrices.GetTemporalAAJitter().Y,
+		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().X,
+		ViewInfo.PrevViewInfo.ViewMatrices.GetTemporalAAJitter().Y
+	);
+	// PreViewTranslation for converting TranslatedWorld back to World
+	PSParameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
+	// Previous frame's PreViewTranslation for correct velocity calculation
+	PSParameters.PrevPreViewTranslation = FVector3f(ViewInfo.PrevViewInfo.ViewMatrices.GetPreViewTranslation());
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	RHICmdList.SetStreamSource(0, nullptr, 0);
