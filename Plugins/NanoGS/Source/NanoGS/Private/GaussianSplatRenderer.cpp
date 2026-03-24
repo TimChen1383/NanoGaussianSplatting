@@ -27,15 +27,18 @@ extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 // current frame matrices and use them as "previous" data next frame.
 // Data is tracked per-view (keyed by FSceneViewState*) to handle multiple viewports
 // (e.g., main editor viewport + camera preview) without cross-contamination.
+//
+// IMPORTANT: We use UN-JITTERED projection matrices for velocity calculation.
+// This ensures ClipPosition is stable when camera is static (we skip CalcViewData
+// when camera doesn't move, so jittered positions would cause velocity errors).
 static void SetVelocityPSParameters(
 	FGaussianSplatPS::FParameters& PSParameters,
 	const FSceneView& View,
 	FGaussianGlobalAccumulator* Accumulator)
 {
-	// Current frame data
-	FMatrix CurTranslatedVP = View.ViewMatrices.GetTranslatedViewProjectionMatrix();
+	// Current frame data - use UN-JITTERED matrix to match CalcViewData's WorldToClip
+	FMatrix CurTranslatedVP = View.ViewMatrices.GetTranslatedViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix();
 	FVector CurPreViewTranslation = View.ViewMatrices.GetPreViewTranslation();
-	FVector2D CurJitter = View.ViewMatrices.GetTemporalAAJitter();
 
 	// Use View.State as per-view key (unique per persistent viewport)
 	const void* ViewKey = View.State;
@@ -51,17 +54,12 @@ static void SetVelocityPSParameters(
 	{
 		PSParameters.PrevTranslatedWorldToClip = FMatrix44f(PrevData->TranslatedViewProjectionMatrix);
 		PSParameters.PrevPreViewTranslation = FVector3f(PrevData->PreViewTranslation);
-		PSParameters.TemporalAAJitter = FVector4f(
-			CurJitter.X, CurJitter.Y,
-			PrevData->TemporalAAJitter.X,
-			PrevData->TemporalAAJitter.Y);
 	}
 	else
 	{
 		// First frame for this view: use current frame data (produces zero velocity)
 		PSParameters.PrevTranslatedWorldToClip = FMatrix44f(CurTranslatedVP);
 		PSParameters.PrevPreViewTranslation = FVector3f(CurPreViewTranslation);
-		PSParameters.TemporalAAJitter = FVector4f(CurJitter.X, CurJitter.Y, CurJitter.X, CurJitter.Y);
 	}
 
 	PSParameters.PreViewTranslation = FVector3f(CurPreViewTranslation);
@@ -72,7 +70,6 @@ static void SetVelocityPSParameters(
 		FGaussianGlobalAccumulator::FPrevFrameViewData& Data = Accumulator->PrevFrameDataPerView.FindOrAdd(ViewKey);
 		Data.TranslatedViewProjectionMatrix = CurTranslatedVP;
 		Data.PreViewTranslation = CurPreViewTranslation;
-		Data.TemporalAAJitter = CurJitter;
 	}
 }
 
@@ -168,7 +165,9 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	// Matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
 	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
+	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
@@ -799,7 +798,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	// Matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
 	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
+	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
@@ -942,7 +943,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	// Transform matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
 	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
+	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
 	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
@@ -1382,7 +1385,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	// Transform matrices
 	Parameters.LocalToWorld    = FMatrix44f(LocalToWorld);
 	Parameters.WorldToPLY      = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
-	Parameters.WorldToClip     = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
+	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
+	Parameters.WorldToClip     = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
 	Parameters.WorldToView     = FMatrix44f(View.ViewMatrices.GetViewMatrix());
 	Parameters.CameraPosition  = FVector3f(View.ViewMatrices.GetViewOrigin());

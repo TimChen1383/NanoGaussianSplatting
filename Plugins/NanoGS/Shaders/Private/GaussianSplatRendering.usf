@@ -38,10 +38,10 @@ uint DebugMode;  // 0=off, 1=cluster colors (Nanite-style debug view)
 uint EnableNanite;  // 1=Nanite enabled, 0=disabled (non-Nanite assets hidden in debug mode)
 #endif
 
-// Pixel shader parameters for velocity calculation (Nanite-style)
+// Pixel shader parameters for velocity calculation
+// NOTE: All matrices are UN-JITTERED to ensure stable velocity when camera is static
 #if PIXELSHADER
-float4x4 PrevTranslatedWorldToClip;  // Previous frame's matrix for velocity
-float4 TemporalAAJitter;             // xy = current jitter, zw = prev jitter (NDC space)
+float4x4 PrevTranslatedWorldToClip;  // Previous frame's un-jittered matrix for velocity
 float3 PreViewTranslation;           // Current frame's pre-view translation
 float3 PrevPreViewTranslation;       // Previous frame's pre-view translation
 #endif
@@ -193,13 +193,12 @@ FPixelOutput MainPS(FVertexOutput Input)
 	FPixelOutput Output;
 	float4 color = Input.Color;
 
-	// Calculate velocity (Nanite-style) for TAA/TSR reprojection
-	// Use splat center's clip position for BOTH current and previous NDC.
-	// This avoids the SV_Position→NDC conversion which can introduce errors.
-	// Both positions represent the same 3D point (splat center) projected
-	// through current and previous camera matrices.
+	// Calculate velocity for TAA/TSR reprojection
+	// IMPORTANT: Both current and previous clip positions use UN-JITTERED projection matrices.
+	// This ensures velocity is stable when camera is static (we skip CalcViewData recomputation
+	// when camera doesn't move, so jittered positions would cause velocity errors).
 
-	// Current NDC from the splat center's clip position
+	// Current NDC from the splat center's clip position (computed with un-jittered matrix)
 	float2 CurrentNDC = Input.CenterClipPos.xy / Input.CenterClipPos.w;
 
 	// Previous frame: convert TranslatedWorldPos to previous frame's translated world space
@@ -208,9 +207,7 @@ FPixelOutput MainPS(FVertexOutput Input)
 	float4 PrevClipPos = mul(float4(PrevTranslatedWorldPos, 1.0), PrevTranslatedWorldToClip);
 	float2 PrevNDC = PrevClipPos.xy / PrevClipPos.w;
 
-	// Remove TAA jitter from both positions to get stable velocity
-	CurrentNDC -= TemporalAAJitter.xy;
-	PrevNDC -= TemporalAAJitter.zw;
+	// No jitter subtraction needed - both matrices are un-jittered
 
 	// Compute velocity in NDC space (current - previous position)
 	float CurrentDeviceZ = Input.CenterClipPos.z / Input.CenterClipPos.w;

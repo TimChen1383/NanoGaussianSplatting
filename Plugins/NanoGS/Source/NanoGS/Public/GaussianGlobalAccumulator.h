@@ -107,13 +107,13 @@ struct NANOGS_API FGaussianGlobalAccumulator
 	// (UE5's PrevViewInfo is not populated for PostOpaqueRender callbacks,
 	// so we track previous frame matrices ourselves, keyed by view identity
 	// to handle multiple simultaneous viewports correctly)
+	// NOTE: Matrices are UN-JITTERED to ensure stable velocity when camera is static
 	//----------------------------------------------------------------------
 
 	struct FPrevFrameViewData
 	{
-		FMatrix TranslatedViewProjectionMatrix = FMatrix::Identity;
+		FMatrix TranslatedViewProjectionMatrix = FMatrix::Identity;  // Un-jittered
 		FVector PreViewTranslation = FVector::ZeroVector;
-		FVector2D TemporalAAJitter = FVector2D::ZeroVector;
 	};
 
 	/** Per-view previous frame data, keyed by FSceneViewState pointer */
