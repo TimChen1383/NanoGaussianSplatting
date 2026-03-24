@@ -61,3 +61,9 @@ Also, all the splats will be engaged in the sorting process all the time.
 
 The ideal format is slicing a big chunk of gaussian splatting file into smaller pieces.
 For example individual props for cinematic scenes or tiles for geo-spatial data (this repo includes a simple python tile slicer).
+
+## Debug
+
+- Almost transparent gaussian splats currently will generate ghost effect with TSR. Might need to clean up the transparent splats or switch to use FXAA.
+<img width="1387" height="746" alt="Transparent" src="https://github.com/user-attachments/assets/493bb345-c68b-4687-85a5-8aa734fbf18f" />
+
