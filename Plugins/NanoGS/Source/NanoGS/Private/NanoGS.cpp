@@ -97,6 +97,13 @@ void FNanoGSModule::StartupModule()
 
 void FNanoGSModule::OnPostEngineInit()
 {
+	// Skip view extension creation during cooking/commandlet — GEngine is null in those contexts
+	if (IsRunningCommandlet() || !GEngine)
+	{
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatting: Skipping ViewExtension creation (commandlet/cook mode)"));
+		return;
+	}
+
 	// Now GEngine is valid — safe to create the view extension
 	ViewExtension = FSceneViewExtensions::NewExtension<FGaussianSplatViewExtension>();
 
