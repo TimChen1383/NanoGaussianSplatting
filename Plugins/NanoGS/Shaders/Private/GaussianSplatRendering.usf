@@ -229,16 +229,22 @@ FPixelOutput MainPS(FVertexOutput Input)
 		return Output;
 	}
 
-	// Normal mode: Gaussian falloff matching Unity's implementation
-	// Unity uses exp(-dot(pos,pos)) where pos goes to ±2 at edges
-	// Our LocalPos goes to ±1 at edges, so we use exp(-4*distSq) to match
-	// At corner (1,1): distSq=2, exp(-8) ≈ 0.00034, matching Unity's exp(-8) at (2,2)
+	// Normalized Gaussian falloff (matches SuperSplat)
+	// Shifts and rescales exp(-4*A) so it reaches exactly 0.0 at the quad edge,
+	// eliminating the visible discontinuity from a nonzero cutoff
 	float distSq = dot(Input.LocalPos, Input.LocalPos);
 
-	// Gaussian weight matching Unity's falloff
-	float gaussianWeight = exp(-4.0 * distSq);
+	// Discard pixels outside the unit circle for efficiency
+	if (distSq > 1.0)
+	{
+		discard;
+	}
 
-	// Apply Gaussian to alpha (saturate to match Unity's behavior)
+	static const float EXP4 = exp(-4.0);           // ≈ 0.0183
+	static const float INV_EXP4 = 1.0 / (1.0 - EXP4); // normalization factor
+	float gaussianWeight = (exp(-4.0 * distSq) - EXP4) * INV_EXP4;
+
+	// Apply Gaussian to alpha
 	color.a = saturate(gaussianWeight * color.a);
 
 	// Premultiplied alpha

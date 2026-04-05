@@ -1,12 +1,12 @@
 ### Unreal ###
+/Binaries
+/Source
 Saved/
+Intermediate/
 Content/
-Source/
-Binaries/
 Config/
 DerivedDataCache/
 .vs/
-Intermediate/
 .vsconfig
 UnityGaussianSplatting/
 GSTest.uproject
