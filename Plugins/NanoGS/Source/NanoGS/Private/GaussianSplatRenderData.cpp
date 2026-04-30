@@ -2,6 +2,7 @@
 
 #include "GaussianSplatRenderData.h"
 #include "GaussianSplatAsset.h"
+#include "NanoGSRHICompat.h"
 #include "RHICommandList.h"
 
 FGaussianSplatRenderData::FGaussianSplatRenderData()
@@ -182,7 +183,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 			0,
 			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
 			.SetInitialState(ERHIAccess::SRVMask);
-		PackedSplatBuffer = RHICmdList.CreateBuffer(Desc);
+		PackedSplatBuffer = NanoGSCreateBuffer(RHICmdList, Desc);
 
 		void* Data = RHICmdList.LockBuffer(PackedSplatBuffer, 0, PackedSplatData.Num(), RLM_WriteOnly);
 		FMemory::Memcpy(Data, PackedSplatData.GetData(), PackedSplatData.Num());
@@ -208,7 +209,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 			0,
 			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
 			.SetInitialState(ERHIAccess::SRVMask);
-		SHBuffer = RHICmdList.CreateBuffer(Desc);
+		SHBuffer = NanoGSCreateBuffer(RHICmdList, Desc);
 
 		void* Data = RHICmdList.LockBuffer(SHBuffer, 0, SHDataSize, RLM_WriteOnly);
 		if (SHData.Num() > 0)
@@ -242,7 +243,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 			sizeof(FGaussianChunkInfo),
 			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
 			.SetInitialState(ERHIAccess::SRVMask);
-		ChunkBuffer = RHICmdList.CreateBuffer(Desc);
+		ChunkBuffer = NanoGSCreateBuffer(RHICmdList, Desc);
 
 		void* Data = RHICmdList.LockBuffer(ChunkBuffer, 0, ChunkSize, RLM_WriteOnly);
 		if (CachedChunkData.Num() > 0)
@@ -272,7 +273,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 			sizeof(uint16),
 			BUF_Static | BUF_IndexBuffer)
 			.SetInitialState(ERHIAccess::VertexOrIndexBuffer);
-		IndexBuffer = RHICmdList.CreateBuffer(Desc);
+		IndexBuffer = NanoGSCreateBuffer(RHICmdList, Desc);
 
 		void* Data = RHICmdList.LockBuffer(IndexBuffer, 0, Indices.Num() * sizeof(uint16), RLM_WriteOnly);
 		FMemory::Memcpy(Data, Indices.GetData(), Indices.Num() * sizeof(uint16));
@@ -290,7 +291,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 			sizeof(FGaussianGPUCluster),
 			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
 			.SetInitialState(ERHIAccess::SRVMask);
-		ClusterBuffer = RHICmdList.CreateBuffer(Desc);
+		ClusterBuffer = NanoGSCreateBuffer(RHICmdList, Desc);
 
 		void* Data = RHICmdList.LockBuffer(ClusterBuffer, 0, BufferSize, RLM_WriteOnly);
 		FMemory::Memcpy(Data, CachedClusterData.GetData(), BufferSize);
@@ -315,7 +316,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 			sizeof(uint32),
 			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
 			.SetInitialState(ERHIAccess::SRVMask);
-		SplatClusterIndexBuffer = RHICmdList.CreateBuffer(Desc);
+		SplatClusterIndexBuffer = NanoGSCreateBuffer(RHICmdList, Desc);
 
 		void* Data = RHICmdList.LockBuffer(SplatClusterIndexBuffer, 0, BufferSize, RLM_WriteOnly);
 		if (CachedSplatClusterIndices.Num() > 0)
