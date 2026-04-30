@@ -9,6 +9,7 @@
 #include "RenderResource.h"
 #include "RHI.h"
 #include "RHIResources.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include <atomic>
 
 class UGaussianSplatComponent;
@@ -354,7 +355,11 @@ public:
 		uint32 VisibilityMap,
 		FMeshElementCollector& Collector) const override;
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION <= 3
+	virtual void CreateRenderThreadResources() override;
+#else
 	virtual void CreateRenderThreadResources(FRHICommandListBase& RHICmdList) override;
+#endif
 	virtual void DestroyRenderThreadResources() override;
 #if WITH_EDITOR
 	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy>>& OutHitProxies) override;
