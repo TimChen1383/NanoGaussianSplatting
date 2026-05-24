@@ -6,6 +6,10 @@
 #include "TextureResource.h"
 #include "GaussianClusterBuilder.h"
 #include "PLYFileReader.h"
+#include "HAL/PlatformFileManager.h"
+#include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
+#include "Serialization/MemoryWriter.h"
 
 #if WITH_EDITOR
 #include "Misc/ScopedSlowTask.h"
@@ -255,6 +259,342 @@ TArray<FVector> UGaussianSplatAsset::GetDecompressedPositions() const
 	PositionBulkData.Unlock();
 
 	return Positions;
+}
+
+namespace
+{
+	/** Append an ASCII line (no trailing newline added by caller) to the byte buffer. */
+	static void AppendAsciiLine(TArray<uint8>& OutBuffer, const FString& Line)
+	{
+		FTCHARToUTF8 Converted(*Line);
+		OutBuffer.Append(reinterpret_cast<const uint8*>(Converted.Get()), Converted.Length());
+		OutBuffer.Add('\n');
+	}
+
+	/** Append a Float32 value to the byte buffer in little-endian order (host is LE on supported platforms). */
+	static FORCEINLINE void AppendFloat32LE(TArray<uint8>& OutBuffer, float Value)
+	{
+		const uint8* Bytes = reinterpret_cast<const uint8*>(&Value);
+		OutBuffer.Add(Bytes[0]);
+		OutBuffer.Add(Bytes[1]);
+		OutBuffer.Add(Bytes[2]);
+		OutBuffer.Add(Bytes[3]);
+	}
+
+	/** Inverse sigmoid (logit) for opacity reverse conversion. Clamped to avoid +/-inf. */
+	static FORCEINLINE float InverseSigmoid(float P)
+	{
+		const float Eps = 1e-6f;
+		const float Clamped = FMath::Clamp(P, Eps, 1.0f - Eps);
+		return FMath::Loge(Clamped / (1.0f - Clamped));
+	}
+}
+
+bool UGaussianSplatAsset::ExportToPly(const FString& OutputPlyPath) const
+{
+	if (SplatCount <= 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: Asset has no splats to export"));
+		return false;
+	}
+
+	if (OutputPlyPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: OutputPlyPath is empty"));
+		return false;
+	}
+
+	// Ensure the parent directory exists for either strategy.
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	const FString ParentDir = FPaths::GetPath(OutputPlyPath);
+	if (!ParentDir.IsEmpty() && !PlatformFile.DirectoryExists(*ParentDir))
+	{
+		PlatformFile.CreateDirectoryTree(*ParentDir);
+	}
+
+	// --- Strategy 1: copy SourceFilePath verbatim if it's still a valid PLY ---
+	if (!SourceFilePath.IsEmpty()
+		&& FPaths::FileExists(SourceFilePath)
+		&& FPLYFileReader::IsValidPLYFile(SourceFilePath))
+	{
+		// Delete an existing target first; CopyFile fails if the destination is
+		// present on most platforms.
+		if (FPaths::FileExists(OutputPlyPath))
+		{
+			PlatformFile.DeleteFile(*OutputPlyPath);
+		}
+
+		if (PlatformFile.CopyFile(*OutputPlyPath, *SourceFilePath))
+		{
+			UE_LOG(LogTemp, Log, TEXT("ExportToPly: Copied source PLY '%s' -> '%s' (%lld bytes)"),
+				*SourceFilePath,
+				*OutputPlyPath,
+				PlatformFile.FileSize(*OutputPlyPath));
+			return true;
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("ExportToPly: SourceFilePath copy failed; falling back to in-memory decompress."));
+	}
+
+	// --- Strategy 2: decompress in-memory bulk data and re-emit a PLY ---
+	//
+	// Supported format combo (covers the default import path used by NanoGS):
+	//   - PositionFormat == Float32
+	//   - SHFormat       == Float16 OR Float32
+	//   - ColorFormat    == Float16x4 (DC + opacity live in ColorTextureBulkData)
+	//
+	// Quantized / cluster SH formats are not yet inverted; in that case we abort
+	// with a log error so callers know to keep their original PLY around.
+
+	if (PositionFormat != EGaussianPositionFormat::Float32)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: Decompress fallback requires Float32 positions, got format index %d"),
+			static_cast<int32>(PositionFormat));
+		return false;
+	}
+
+	const bool bSHFloat16 = (SHFormat == EGaussianSHFormat::Float16);
+	const bool bSHFloat32 = (SHFormat == EGaussianSHFormat::Float32);
+	if (SHBands > 0 && !bSHFloat16 && !bSHFloat32)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: Decompress fallback only supports Float16/Float32 SH; got format index %d (Cluster/Norm formats not implemented)"),
+			static_cast<int32>(SHFormat));
+		return false;
+	}
+
+	if (ColorFormat != EGaussianColorFormat::Float16x4)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: Decompress fallback requires Float16x4 color/opacity texture; got format index %d"),
+			static_cast<int32>(ColorFormat));
+		return false;
+	}
+
+	const int64 PositionDataSize = PositionBulkData.GetBulkDataSize();
+	const int64 OtherDataSize = OtherBulkData.GetBulkDataSize();
+	const int64 ColorDataSize = ColorTextureBulkData.GetBulkDataSize();
+	const int64 SHDataSize = SHBulkData.GetBulkDataSize();
+
+	const int64 ExpectedPositionSize = static_cast<int64>(SplatCount) * 12;
+	const int64 ExpectedOtherSize = static_cast<int64>(SplatCount) * 28;
+	if (PositionDataSize < ExpectedPositionSize || OtherDataSize < ExpectedOtherSize)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: Bulk data missing or short (positions=%lld/%lld, other=%lld/%lld)"),
+			PositionDataSize, ExpectedPositionSize, OtherDataSize, ExpectedOtherSize);
+		return false;
+	}
+	if (ColorDataSize <= 0 || ColorTextureWidth <= 0 || ColorTextureHeight <= 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: Color texture bulk data missing (size=%lld, %dx%d). Cannot recover opacity / DC color."),
+			ColorDataSize, ColorTextureWidth, ColorTextureHeight);
+		return false;
+	}
+
+	const int32 CoeffsPerChannel = (SHBands == 0) ? 0
+		: (SHBands == 1) ? 3
+		: (SHBands == 2) ? 8
+		: 15;                                                       // SHBands == 3
+	const int32 TotalSHValues = CoeffsPerChannel * 3;               // f_rest count
+	const int32 TotalCoeffsIncDC = (SHBands == 0) ? 0 : (CoeffsPerChannel + 1);
+	const int32 SHBytesPerSplat = TotalCoeffsIncDC * 3 * (bSHFloat32 ? sizeof(float) : sizeof(FFloat16));
+	const int64 ExpectedSHSize = static_cast<int64>(SplatCount) * SHBytesPerSplat;
+	if (SHBands > 0 && SHDataSize < ExpectedSHSize)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: SH bulk data short (size=%lld, expected=%lld)"),
+			SHDataSize, ExpectedSHSize);
+		return false;
+	}
+
+	// Lock everything we need to read.
+	const uint8* PositionPtr = static_cast<const uint8*>(PositionBulkData.LockReadOnly());
+	const uint8* OtherPtr = static_cast<const uint8*>(OtherBulkData.LockReadOnly());
+	const FFloat16Color* ColorPixels = static_cast<const FFloat16Color*>(ColorTextureBulkData.LockReadOnly());
+	const uint8* SHPtr = (SHBands > 0 && SHDataSize > 0)
+		? static_cast<const uint8*>(SHBulkData.LockReadOnly())
+		: nullptr;
+
+	// Build the PLY header (ASCII) and then the binary vertex block.
+	//
+	// We re-emit in the exact 3DGS layout that FPLYFileReader expects when reading
+	// back, so this output is round-trip safe with the plugin's own importer and
+	// is also accepted by external tools (mkkellogg viewer, gaussforge, SuperSplat).
+
+	TArray<uint8> OutBytes;
+	const int32 BytesPerVertex = (3 + 3 + 3 + TotalSHValues + 1 + 3 + 4) * sizeof(float);
+	OutBytes.Reserve(4096 + static_cast<int64>(SplatCount) * BytesPerVertex);
+
+	AppendAsciiLine(OutBytes, TEXT("ply"));
+	AppendAsciiLine(OutBytes, TEXT("format binary_little_endian 1.0"));
+	AppendAsciiLine(OutBytes, FString::Printf(TEXT("comment Generated by NanoGS UGaussianSplatAsset::ExportToPly (asset '%s', SHBands=%d)"),
+		*GetName(), SHBands));
+	AppendAsciiLine(OutBytes, FString::Printf(TEXT("element vertex %d"), SplatCount));
+	AppendAsciiLine(OutBytes, TEXT("property float x"));
+	AppendAsciiLine(OutBytes, TEXT("property float y"));
+	AppendAsciiLine(OutBytes, TEXT("property float z"));
+	AppendAsciiLine(OutBytes, TEXT("property float nx"));
+	AppendAsciiLine(OutBytes, TEXT("property float ny"));
+	AppendAsciiLine(OutBytes, TEXT("property float nz"));
+	AppendAsciiLine(OutBytes, TEXT("property float f_dc_0"));
+	AppendAsciiLine(OutBytes, TEXT("property float f_dc_1"));
+	AppendAsciiLine(OutBytes, TEXT("property float f_dc_2"));
+	for (int32 r = 0; r < TotalSHValues; ++r)
+	{
+		AppendAsciiLine(OutBytes, FString::Printf(TEXT("property float f_rest_%d"), r));
+	}
+	AppendAsciiLine(OutBytes, TEXT("property float opacity"));
+	AppendAsciiLine(OutBytes, TEXT("property float scale_0"));
+	AppendAsciiLine(OutBytes, TEXT("property float scale_1"));
+	AppendAsciiLine(OutBytes, TEXT("property float scale_2"));
+	AppendAsciiLine(OutBytes, TEXT("property float rot_0"));
+	AppendAsciiLine(OutBytes, TEXT("property float rot_1"));
+	AppendAsciiLine(OutBytes, TEXT("property float rot_2"));
+	AppendAsciiLine(OutBytes, TEXT("property float rot_3"));
+	AppendAsciiLine(OutBytes, TEXT("end_header"));
+
+	// Vertex body
+	const float UEtoMeters = 0.01f;     // inverse of FPLYFileReader's *100 cm scale
+
+	for (int32 i = 0; i < SplatCount; ++i)
+	{
+		// Position: UE (X-forward, Y-right, Z-up, cm) -> PLY (X-right, Y-down, Z-forward, m)
+		const float* PosF = reinterpret_cast<const float*>(PositionPtr + i * 12);
+		const float UE_X = PosF[0];
+		const float UE_Y = PosF[1];
+		const float UE_Z = PosF[2];
+		const float PlyX =  UE_Y * UEtoMeters;
+		const float PlyY = -UE_Z * UEtoMeters;
+		const float PlyZ =  UE_X * UEtoMeters;
+		AppendFloat32LE(OutBytes, PlyX);
+		AppendFloat32LE(OutBytes, PlyY);
+		AppendFloat32LE(OutBytes, PlyZ);
+
+		// Normals: 3DGS PLYs typically carry zeros here (the field is reserved by
+		// COLMAP-style trainers but unused by 3DGS).
+		AppendFloat32LE(OutBytes, 0.0f);
+		AppendFloat32LE(OutBytes, 0.0f);
+		AppendFloat32LE(OutBytes, 0.0f);
+
+		// SH DC + higher coefficients. Recover the DC term from SHBulkData (Version 5
+		// layout stores DC at index 0). If SHBands == 0 we fall back to the color
+		// texture (still works because SHDCToColor is invertible).
+		float SH_DC_R = 0.0f, SH_DC_G = 0.0f, SH_DC_B = 0.0f;
+
+		// SH higher-order: interleaved [DC, c0, c1, ..., c(N-1)] x RGB in SHBulkData.
+		// PLY wants planar: all R coefficients, then G, then B.
+		TArray<float, TInlineAllocator<48>> SH_Rs;
+		TArray<float, TInlineAllocator<48>> SH_Gs;
+		TArray<float, TInlineAllocator<48>> SH_Bs;
+		SH_Rs.SetNumZeroed(CoeffsPerChannel);
+		SH_Gs.SetNumZeroed(CoeffsPerChannel);
+		SH_Bs.SetNumZeroed(CoeffsPerChannel);
+
+		if (SHBands > 0 && SHPtr != nullptr)
+		{
+			const int32 BaseOff = i * TotalCoeffsIncDC * 3 * (bSHFloat32 ? 4 : 2);
+			auto ReadSHValue = [&](int32 CoefIdx, int32 ChannelIdx) -> float
+			{
+				const int32 ByteIdx = BaseOff + (CoefIdx * 3 + ChannelIdx) * (bSHFloat32 ? 4 : 2);
+				if (bSHFloat32)
+				{
+					return *reinterpret_cast<const float*>(SHPtr + ByteIdx);
+				}
+				FFloat16 Half;
+				Half.Encoded = *reinterpret_cast<const uint16*>(SHPtr + ByteIdx);
+				return Half.GetFloat();
+			};
+
+			SH_DC_R = ReadSHValue(0, 0);
+			SH_DC_G = ReadSHValue(0, 1);
+			SH_DC_B = ReadSHValue(0, 2);
+
+			for (int32 c = 0; c < CoeffsPerChannel; ++c)
+			{
+				SH_Rs[c] = ReadSHValue(c + 1, 0);
+				SH_Gs[c] = ReadSHValue(c + 1, 1);
+				SH_Bs[c] = ReadSHValue(c + 1, 2);
+			}
+		}
+		else
+		{
+			// SHBands == 0: recover DC from color texture (SH_C0 * SH_DC = Color - 0.5).
+			int32 TexX = 0, TexY = 0;
+			GaussianSplattingUtils::SplatIndexToTextureCoord(i, ColorTextureWidth, TexX, TexY);
+			if (TexY < ColorTextureHeight)
+			{
+				const FFloat16Color& Pixel = ColorPixels[TexY * ColorTextureWidth + TexX];
+				const float InvC0 = 1.0f / GaussianSplattingConstants::SH_C0;
+				SH_DC_R = (Pixel.R.GetFloat() - 0.5f) * InvC0;
+				SH_DC_G = (Pixel.G.GetFloat() - 0.5f) * InvC0;
+				SH_DC_B = (Pixel.B.GetFloat() - 0.5f) * InvC0;
+			}
+		}
+
+		AppendFloat32LE(OutBytes, SH_DC_R);
+		AppendFloat32LE(OutBytes, SH_DC_G);
+		AppendFloat32LE(OutBytes, SH_DC_B);
+
+		for (int32 c = 0; c < CoeffsPerChannel; ++c) { AppendFloat32LE(OutBytes, SH_Rs[c]); }
+		for (int32 c = 0; c < CoeffsPerChannel; ++c) { AppendFloat32LE(OutBytes, SH_Gs[c]); }
+		for (int32 c = 0; c < CoeffsPerChannel; ++c) { AppendFloat32LE(OutBytes, SH_Bs[c]); }
+
+		// Opacity: linear [0,1] in the color texture's alpha channel -> logit
+		int32 TexX = 0, TexY = 0;
+		GaussianSplattingUtils::SplatIndexToTextureCoord(i, ColorTextureWidth, TexX, TexY);
+		float Opacity = 1.0f;
+		if (TexY < ColorTextureHeight)
+		{
+			Opacity = ColorPixels[TexY * ColorTextureWidth + TexX].A.GetFloat();
+		}
+		AppendFloat32LE(OutBytes, InverseSigmoid(Opacity));
+
+		// Scale: UE linear cm -> PLY log-meters, reversing the axis swap from the reader.
+		const float* OtherF = reinterpret_cast<const float*>(OtherPtr + i * 28);
+		const float UE_QuatX = OtherF[0];
+		const float UE_QuatY = OtherF[1];
+		const float UE_QuatZ = OtherF[2];
+		const float UE_QuatW = OtherF[3];
+		const float UE_ScaleX = OtherF[4];
+		const float UE_ScaleY = OtherF[5];
+		const float UE_ScaleZ = OtherF[6];
+
+		const float ScaleEps = 1e-10f;
+		const float PlyScale0 = FMath::Loge(FMath::Max(UE_ScaleY, ScaleEps) * UEtoMeters);
+		const float PlyScale1 = FMath::Loge(FMath::Max(UE_ScaleZ, ScaleEps) * UEtoMeters);
+		const float PlyScale2 = FMath::Loge(FMath::Max(UE_ScaleX, ScaleEps) * UEtoMeters);
+		AppendFloat32LE(OutBytes, PlyScale0);
+		AppendFloat32LE(OutBytes, PlyScale1);
+		AppendFloat32LE(OutBytes, PlyScale2);
+
+		// Rotation: invert the sign / axis remap that FPLYFileReader applies.
+		// Reader: W=QW, X=-QZ, Y=-QX, Z=QY
+		// Inverse: QW=W, QX=-Y, QY=Z, QZ=-X
+		const float PlyQW =  UE_QuatW;
+		const float PlyQX = -UE_QuatY;
+		const float PlyQY =  UE_QuatZ;
+		const float PlyQZ = -UE_QuatX;
+		AppendFloat32LE(OutBytes, PlyQW);
+		AppendFloat32LE(OutBytes, PlyQX);
+		AppendFloat32LE(OutBytes, PlyQY);
+		AppendFloat32LE(OutBytes, PlyQZ);
+	}
+
+	PositionBulkData.Unlock();
+	OtherBulkData.Unlock();
+	ColorTextureBulkData.Unlock();
+	if (SHPtr != nullptr)
+	{
+		SHBulkData.Unlock();
+	}
+
+	if (!FFileHelper::SaveArrayToFile(OutBytes, *OutputPlyPath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("ExportToPly: Failed to write %d bytes to '%s'"),
+			OutBytes.Num(), *OutputPlyPath);
+		return false;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ExportToPly: Wrote decompressed PLY for asset '%s' -> '%s' (%d splats, %d bytes, SHBands=%d)"),
+		*GetName(), *OutputPlyPath, SplatCount, OutBytes.Num(), SHBands);
+	return true;
 }
 
 void UGaussianSplatAsset::CalculateChunkBounds(const TArray<FGaussianSplatData>& InSplats)

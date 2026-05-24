@@ -238,6 +238,43 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Debug")
 	TArray<FVector> GetDecompressedPositions() const;
 
+	/**
+	 * Export this asset's splat data to a PLY file (3DGS-standard binary little-endian).
+	 *
+	 * Strategy (in order):
+	 *  1. If SourceFilePath is set and points to a valid PLY, copy it verbatim.
+	 *     This is lossless and preserves any properties this plugin does not consume
+	 *     (e.g. f_rest_*, custom annotations).
+	 *  2. Otherwise (or if SourceFilePath is stale / missing), decompress the
+	 *     in-memory bulk data and re-emit a 3DGS-standard PLY (positions, normals=0,
+	 *     f_dc_0..2, f_rest_0..N, opacity, scale_0..2, rot_0..3). Reverse coordinate
+	 *     conversions applied by FPLYFileReader so the output is consumable by other
+	 *     3DGS tools (mkkellogg viewer, gaussforge, SuperSplat, etc.).
+	 *
+	 * Supported in-memory formats for the decompress fallback:
+	 *  - PositionFormat: Float32
+	 *  - SHFormat:       Float16 or Float32
+	 *  - ColorFormat:    Float16x4 (DC + opacity stored in color texture)
+	 * Quantized / cluster SH formats are not yet supported by the fallback; in that
+	 * case the function fails with a log message and returns false (callers should
+	 * keep their original PLY around as the source of truth).
+	 *
+	 * @param OutputPlyPath Absolute filesystem path where the PLY will be written.
+	 *                      Parent directory is created if missing.
+	 * @return True on success, false on failure (see log for details).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Export")
+	bool ExportToPly(const FString& OutputPlyPath) const;
+
+	/**
+	 * Get the original PLY source file path stored at import time.
+	 * Returns an empty string if the asset was created programmatically or the
+	 * source path was cleared. The path is not guaranteed to still exist on disk
+	 * (callers should verify with FPaths::FileExists before reading).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Export")
+	FString GetSourceFilePath() const { return SourceFilePath; }
+
 	/** Get bytes per splat for position data based on format */
 	static int32 GetPositionBytesPerSplat(EGaussianPositionFormat Format);
 
