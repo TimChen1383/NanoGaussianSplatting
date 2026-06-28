@@ -12,6 +12,8 @@
 #include "SceneManagement.h"
 #include "DynamicMeshBuilder.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
+#include "TextureResource.h"
 #include "EngineUtils.h"
 
 //////////////////////////////////////////////////////////////////////////

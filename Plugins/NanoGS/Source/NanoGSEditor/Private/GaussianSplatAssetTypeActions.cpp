@@ -5,6 +5,7 @@
 #include "EditorReimportHandler.h"
 #include "ToolMenuSection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions_GaussianSplatAsset"

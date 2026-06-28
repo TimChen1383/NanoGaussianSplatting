@@ -5,6 +5,7 @@
 #include "PLYFileReader.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Misc/FeedbackContext.h"
+#include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
 
 UGaussianSplatAssetFactory::UGaussianSplatAssetFactory()

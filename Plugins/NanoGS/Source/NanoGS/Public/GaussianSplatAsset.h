@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/Texture2D.h"
 #include "UObject/ObjectMacros.h"
 #include "Serialization/BulkData.h"
 #include "GaussianDataTypes.h"

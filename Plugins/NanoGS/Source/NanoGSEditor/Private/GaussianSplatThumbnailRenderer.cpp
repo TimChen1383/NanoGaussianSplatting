@@ -5,6 +5,7 @@
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
 #include "Engine/Texture2D.h"
+#include "TextureResource.h"
 
 void UGaussianSplatThumbnailRenderer::Draw(
 	UObject* Object,
@@ -27,7 +28,7 @@ void UGaussianSplatThumbnailRenderer::Draw(
 		Thumb->UpdateResource();
 	}
 
-	FTexture* TextureResource = Thumb->GetResource();
+	FTextureResource* TextureResource = Thumb->GetResource();
 	if (!TextureResource) return;
 
 	FCanvasTileItem TileItem(
