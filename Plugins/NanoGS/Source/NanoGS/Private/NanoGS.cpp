@@ -315,15 +315,49 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 			MaxRenderBudget = 0;  // Unlimited — debug mode overrides budget
 		}
 
+		// SkipRenderPass: the compute dispatches below (culling, compaction, radix sort)
+		// cannot run inside an active render pass. Vulkan enforces this and asserts
+		// (GetCommandBuffer().IsOutsideRenderPass()) whereas D3D12 tolerates it, so the
+		// stock code renders fine on Windows but breaks on Linux. We let RDG skip the
+		// automatic render pass and open one manually only around the final draw calls.
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("GaussianSplat_RenderToIntermediate"),
 			Pass1Parameters,
-			ERDGPassFlags::Raster,
+			ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
 			[SceneView, VisibleProxies, TotalSplatCount, bCanSkip, bAllNanite, RawAccumulator,
 			 SharedIndexBuffer, CurrentVP, CurrentDebugMode,
-			 CurrentDebugForceLODLevel, DebugMode, MaxRenderBudget](FRHICommandListImmediate& RHICmdList)
+			 CurrentDebugForceLODLevel, DebugMode, MaxRenderBudget,
+			 IntermediateTexture, VelocityTexture, DepthTexture](FRHICommandListImmediate& RHICmdList)
 			{
-				if (!SceneView) return;
+				// Mirror the bindings RDG would have set from Pass1Parameters (incl. the
+				// intermediate RT clear). Called just before each draw, and on early-outs
+				// so the composite pass never reads an uninitialised intermediate target.
+				auto BeginSplatRenderPass = [&RHICmdList, IntermediateTexture, VelocityTexture, DepthTexture]()
+				{
+					FRHIRenderPassInfo RPInfo;
+					RPInfo.ColorRenderTargets[0].RenderTarget = IntermediateTexture->GetRHI();
+					RPInfo.ColorRenderTargets[0].Action = ERenderTargetActions::Clear_Store;
+					if (VelocityTexture)
+					{
+						RPInfo.ColorRenderTargets[1].RenderTarget = VelocityTexture->GetRHI();
+						RPInfo.ColorRenderTargets[1].Action = ERenderTargetActions::Load_Store;
+					}
+					if (DepthTexture)
+					{
+						RPInfo.DepthStencilRenderTarget.DepthStencilTarget = DepthTexture->GetRHI();
+						RPInfo.DepthStencilRenderTarget.Action = EDepthStencilTargetActions::LoadDepthStencil_StoreDepthStencil;
+						RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthWrite_StencilWrite;
+					}
+					RHICmdList.BeginRenderPass(RPInfo, TEXT("GaussianSplatDrawRP"));
+				};
+
+				if (!SceneView)
+				{
+					// Still need to clear the intermediate RT: the composite pass always reads it.
+					BeginSplatRenderPass();
+					RHICmdList.EndRenderPass();
+					return;
+				}
 				SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering_Global);
 
 				// SAFETY CHECK: Re-validate all proxies before rendering.
@@ -349,6 +383,8 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 				// If no valid proxies remain, skip rendering entirely
 				if (ValidProxies.Num() == 0 || NewTotalSplatCount == 0)
 				{
+					BeginSplatRenderPass();
+					RHICmdList.EndRenderPass();
 					return;
 				}
 
@@ -525,8 +561,10 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 					}
 
 					// Single draw call — instance count from GlobalDrawIndirectArgsBuffer
+					BeginSplatRenderPass();
 					FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 						RHICmdList, *SceneView, RawAccumulator, SharedIndexBuffer, DebugMode);
+					RHICmdList.EndRenderPass();
 				}
 				else
 				{
@@ -609,9 +647,11 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 					}
 
 					// Single draw call for ALL proxies (capped to render budget)
+					BeginSplatRenderPass();
 					FGaussianSplatRenderer::DrawSplatsGlobal(
 						RHICmdList, *SceneView, RawAccumulator,
 						SharedIndexBuffer, (int32)CappedTotalSplatCount, DebugMode);
+					RHICmdList.EndRenderPass();
 				}
 			}
 		);
