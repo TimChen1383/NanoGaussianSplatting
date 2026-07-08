@@ -441,7 +441,13 @@ void UGaussianSplatAsset::CreateColorTextureFromData()
 	ColorTexture->AddressY = TA_Clamp;
 	ColorTexture->NeverStream = true;
 	ColorTexture->LODGroup = TEXTUREGROUP_Pixels2D;
+#if WITH_EDITORONLY_DATA
+	// UTexture2D::MipGenSettings is editor-only; referencing it unconditionally breaks
+	// the cooked/packaged build (error: no member named 'MipGenSettings' in
+	// 'UTexture2D'). The platform data below is already created with a single mip, so
+	// this only matters in-editor anyway.
 	ColorTexture->MipGenSettings = TMGS_NoMipmaps;
+#endif
 
 	// Create mip 0
 	FTexture2DMipMap* Mip = new FTexture2DMipMap();
