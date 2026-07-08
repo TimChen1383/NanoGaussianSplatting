@@ -213,6 +213,13 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 
 		FVector CameraLocation = SceneView->ViewLocation;
 
+		// SceneView->ViewFrustum is only populated for editor viewports; in game views
+		// (PIE and packaged builds) it arrives empty, so IntersectBox() culls every
+		// proxy and nothing renders. Rebuild the frustum from the view-projection matrix,
+		// which is always valid.
+		FConvexVolume ViewFrustum;
+		GetViewFrustumBounds(ViewFrustum, SceneView->ViewMatrices.GetViewProjectionMatrix(), true);
+
 		for (FGaussianSplatSceneProxy* Proxy : Proxies)
 		{
 			if (!Proxy) continue;
@@ -220,7 +227,7 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 			if (!Proxy->IsShown(SceneView)) continue;
 
 			const FBoxSphereBounds& Bounds = Proxy->GetBounds();
-			if (!SceneView->ViewFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent)) continue;
+			if (!ViewFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent)) continue;
 
 			FGaussianSplatGPUResources* GPUResources = Proxy->GetGPUResources();
 			if (!GPUResources || !GPUResources->IsValid()) continue;
