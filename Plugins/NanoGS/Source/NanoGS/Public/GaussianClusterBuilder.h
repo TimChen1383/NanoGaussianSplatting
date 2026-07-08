@@ -39,7 +39,13 @@ public:
 		/** LOD reduction ratio - how many original splats per LOD splat (default: divide by 4) */
 		int32 LODReductionRatio = 4;
 
-		FBuildSettings() = default;
+		// Explicit empty body instead of `= default`: Clang (Linux/Mac) rejects a
+		// defaulted constructor that has default member initializers when the type is
+		// used as a default argument inside its enclosing class (see
+		// BuildClusterHierarchy below). MSVC accepts it, so this only breaks non-Windows
+		// builds. An out-of-line body sidesteps the "needed within definition of
+		// enclosing class" diagnostic.
+		FBuildSettings() {}
 	};
 
 	/**
