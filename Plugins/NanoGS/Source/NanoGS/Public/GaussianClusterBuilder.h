@@ -38,8 +38,6 @@ public:
 
 		/** LOD reduction ratio - how many original splats per LOD splat (default: divide by 4) */
 		int32 LODReductionRatio = 4;
-
-		FBuildSettings() = default;
 	};
 
 	/**
@@ -53,7 +51,14 @@ public:
 	static bool BuildClusterHierarchy(
 		TArray<FGaussianSplatData>& InOutSplats,
 		FGaussianClusterHierarchy& OutHierarchy,
-		const FBuildSettings& Settings = FBuildSettings());
+		const FBuildSettings& Settings);
+
+	static bool BuildClusterHierarchy(
+		TArray<FGaussianSplatData>& InOutSplats,
+		FGaussianClusterHierarchy& OutHierarchy)
+	{
+		return BuildClusterHierarchy(InOutSplats, OutHierarchy, FBuildSettings());
+	}
 
 private:
 	/**

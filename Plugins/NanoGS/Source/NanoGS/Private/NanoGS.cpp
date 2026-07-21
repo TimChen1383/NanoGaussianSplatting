@@ -315,16 +315,28 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 			MaxRenderBudget = 0;  // Unlimited — debug mode overrides budget
 		}
 
+		// Metal (unlike D3D) forbids compute dispatches and resource transitions while a
+		// render pass is open. All culling/compaction/sort compute therefore runs in a
+		// dedicated compute pass here, and the raster pass below is draw-only. The two
+		// passes both take FRHICommandListImmediate so RDG executes them in order; the
+		// draw decision is handed over via PassState.
+		struct FGlobalPassState
+		{
+			bool bShouldDraw = false;
+			bool bUseCompactionPath = false;
+			int32 CappedTotalSplatCount = 0;
+		};
+		FGlobalPassState* PassState = GraphBuilder.AllocObject<FGlobalPassState>();
+
 		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("GaussianSplat_RenderToIntermediate"),
-			Pass1Parameters,
-			ERDGPassFlags::Raster,
+			RDG_EVENT_NAME("GaussianSplat_ComputePrep"),
+			ERDGPassFlags::None,
 			[SceneView, VisibleProxies, TotalSplatCount, bCanSkip, bAllNanite, RawAccumulator,
-			 SharedIndexBuffer, CurrentVP, CurrentDebugMode,
-			 CurrentDebugForceLODLevel, DebugMode, MaxRenderBudget](FRHICommandListImmediate& RHICmdList)
+			 CurrentVP, CurrentDebugMode,
+			 CurrentDebugForceLODLevel, MaxRenderBudget, PassState](FRHICommandListImmediate& RHICmdList)
 			{
 				if (!SceneView) return;
-				SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering_Global);
+				SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCompute_Global);
 
 				// SAFETY CHECK: Re-validate all proxies before rendering.
 				// Proxies may have been destroyed between when we built VisibleProxies
@@ -524,9 +536,9 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 						}
 					}
 
-					// Single draw call — instance count from GlobalDrawIndirectArgsBuffer
-					FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
-						RHICmdList, *SceneView, RawAccumulator, SharedIndexBuffer, DebugMode);
+					// Draw happens in the raster pass below
+					PassState->bShouldDraw = true;
+					PassState->bUseCompactionPath = true;
 				}
 				else
 				{
@@ -608,10 +620,45 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 						}
 					}
 
+					// Draw happens in the raster pass below
+					PassState->bShouldDraw = true;
+					PassState->bUseCompactionPath = false;
+					PassState->CappedTotalSplatCount = (int32)CappedTotalSplatCount;
+				}
+
+				if (PassState->bShouldDraw)
+				{
+					// Graphics-read transition must happen outside the render pass on Metal.
+					// (Previously done at the top of DrawSplatsGlobal/DrawSplatsGlobalIndirect.)
+					RHICmdList.Transition(FRHITransitionInfo(RawAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
+				}
+			}
+		);
+
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("GaussianSplat_RenderToIntermediate"),
+			Pass1Parameters,
+			ERDGPassFlags::Raster,
+			[SceneView, RawAccumulator, SharedIndexBuffer, DebugMode, PassState](FRHICommandListImmediate& RHICmdList)
+			{
+				if (!SceneView || !PassState->bShouldDraw)
+				{
+					return;
+				}
+				SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering_Global);
+
+				if (PassState->bUseCompactionPath)
+				{
+					// Single draw call — instance count from GlobalDrawIndirectArgsBuffer
+					FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
+						RHICmdList, *SceneView, RawAccumulator, SharedIndexBuffer, DebugMode);
+				}
+				else
+				{
 					// Single draw call for ALL proxies (capped to render budget)
 					FGaussianSplatRenderer::DrawSplatsGlobal(
 						RHICmdList, *SceneView, RawAccumulator,
-						SharedIndexBuffer, (int32)CappedTotalSplatCount, DebugMode);
+						SharedIndexBuffer, PassState->CappedTotalSplatCount, DebugMode);
 				}
 			}
 		);
