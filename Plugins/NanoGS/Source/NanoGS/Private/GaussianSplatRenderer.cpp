@@ -1186,8 +1186,8 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 		return;
 	}
 
-	// Transition global ViewData for graphics reads
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
+	// GlobalViewDataBuffer is transitioned to SRVGraphics in the compute-prep pass
+	// (transitions are not allowed inside a render pass on Metal).
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -1620,8 +1620,9 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 		return;
 	}
 
-	// Transition global ViewData for graphics reads (SortKeysBuffer already in SRVGraphics)
-	RHICmdList.Transition(FRHITransitionInfo(GlobalAccumulator->GlobalViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
+	// GlobalViewDataBuffer is transitioned to SRVGraphics in the compute-prep pass
+	// (transitions are not allowed inside a render pass on Metal; SortKeysBuffer is
+	// already in SRVGraphics).
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
