@@ -25,21 +25,30 @@ public:
 	struct FBuildSettings
 	{
 		/** Number of splats per leaf cluster (default: 128) */
-		int32 SplatsPerCluster = GaussianClusterConstants::DefaultSplatsPerCluster;
+		int32 SplatsPerCluster;
 
 		/** Maximum children per parent cluster (default: 8) */
-		int32 MaxChildrenPerCluster = GaussianClusterConstants::MaxChildrenPerCluster;
+		int32 MaxChildrenPerCluster;
 
 		/** Whether to reorder splat data for cluster locality */
-		bool bReorderSplats = true;
+		bool bReorderSplats;
 
 		/** Whether to generate LOD splats for parent clusters */
-		bool bGenerateLOD = true;
+		bool bGenerateLOD;
 
 		/** LOD reduction ratio - how many original splats per LOD splat (default: divide by 4) */
-		int32 LODReductionRatio = 4;
+		int32 LODReductionRatio;
 
-		FBuildSettings() = default;
+		// Explicit ctor: Clang rejects nested `= default` + DMIs referencing
+		// enclosing-scope constants when used as a default function argument.
+		FBuildSettings()
+			: SplatsPerCluster(GaussianClusterConstants::DefaultSplatsPerCluster)
+			, MaxChildrenPerCluster(GaussianClusterConstants::MaxChildrenPerCluster)
+			, bReorderSplats(true)
+			, bGenerateLOD(true)
+			, LODReductionRatio(4)
+		{
+		}
 	};
 
 	/**

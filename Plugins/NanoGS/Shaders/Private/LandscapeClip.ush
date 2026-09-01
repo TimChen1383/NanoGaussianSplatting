@@ -1,0 +1,46 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#ifndef LANDSCAPE_CLIP_USH
+#define LANDSCAPE_CLIP_USH
+
+Texture2D LandscapeHeightTexture;
+SamplerState LandscapeHeightSampler;
+float3 LandscapeOrigin;
+float2 LandscapeHalfExtent;
+float LandscapeScaleXY;
+float LandscapeScaleZ;
+float LandscapeZOffset;
+float LandscapeCenterZ;
+float2 LandscapeDimensions;
+float LandscapeClipBias;
+
+bool IsBelowLandscape(float3 worldPos)
+{
+	if (LandscapeDimensions.x < 2.0 || LandscapeDimensions.y < 2.0 || LandscapeScaleXY <= 0.0)
+	{
+		return false;
+	}
+
+	const float2 localXY = worldPos.xy - LandscapeOrigin.xy;
+	if (abs(localXY.x) > LandscapeHalfExtent.x || abs(localXY.y) > LandscapeHalfExtent.y)
+	{
+		return false;
+	}
+
+	const float2 grid = (localXY + LandscapeHalfExtent) / LandscapeScaleXY;
+	if (grid.x < 0.0 || grid.y < 0.0 ||
+		grid.x > (LandscapeDimensions.x - 1.0) || grid.y > (LandscapeDimensions.y - 1.0))
+	{
+		return false;
+	}
+
+	const float2 uv = (grid + 0.5) / LandscapeDimensions;
+	const float h = LandscapeHeightTexture.SampleLevel(LandscapeHeightSampler, uv, 0).r;
+	const float localZ = h * LandscapeScaleZ + LandscapeZOffset - LandscapeCenterZ;
+	const float landscapeWorldZ = LandscapeOrigin.z + localZ;
+	return worldPos.z < (landscapeWorldZ + LandscapeClipBias);
+}
+
+#endif // LANDSCAPE_CLIP_USH
